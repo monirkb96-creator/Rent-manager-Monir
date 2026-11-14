@@ -25,10 +25,43 @@ jobs:
           java-version: '21'
 
       - name: Prepare signing keystore and environment
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
-          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
+          if [ ! -f app/google-services.json ]; then
+            if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+              python3 -c 'import base64, json, os; raw = os.environ["GOOGLE_SERVICES_JSON"].strip(); raw = raw if raw.startswith("{") else base64.b64decode("".join(raw.split())).decode("utf-8"); data = json.loads(raw); json.dump(data, open("app/google-services.json", "w", encoding="utf-8"), indent=2)'
+              echo "Restored app/google-services.json from GOOGLE_SERVICES_JSON secret."
+            else
+              echo "::error::Missing app/google-services.json. Add GOOGLE_SERVICES_JSON in GitHub Repo Settings -> Secrets and variables -> Actions."
+              exit 1
+            fi
           fi
+
+          if [ ! -f debug.keystore ]; then
+            if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+              printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > debug.keystore
+              keytool -list -keystore debug.keystore -storepass android >/dev/null
+              echo "Restored debug.keystore from DEBUG_KEYSTORE_BASE64 secret."
+            elif [ -f debug.keystore.base64 ]; then
+              tr -d '[:space:]' < debug.keystore.base64 | base64 -d > debug.keystore
+              echo "Restored debug.keystore from debug.keystore.base64."
+            else
+              echo "::warning::DEBUG_KEYSTORE_BASE64 secret not set; generating a temporary debug.keystore. Google Sign-In requires adding DEBUG_KEYSTORE_BASE64 or registering this SHA-1 in Firebase Console."
+              keytool -genkeypair -noprompt \
+                -keystore debug.keystore \
+                -storepass android \
+                -alias androiddebugkey \
+                -keypass android \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+              keytool -list -v -keystore debug.keystore -storepass android | grep -E "SHA1:|SHA256:" || true
+            fi
+          fi
+
           if [ ! -f .env ] && [ -f .env.example ]; then
             cp .env.example .env
           fi
@@ -56,6 +89,7 @@ jobs:
             gh release upload latest "app/build/outputs/apk/debug/app-debug.apk#SmartRentManager.apk" --clobber
           else
             gh release create latest "app/build/outputs/apk/debug/app-debug.apk#SmartRentManager.apk" \
+              --target "${{ github.sha }}" \
               --title "Smart Rent Manager APK" \
               --notes "Auto-built Android APK for Smart Rent Manager. Tap SmartRentManager.apk below to download directly on your Android phone."
           fi
