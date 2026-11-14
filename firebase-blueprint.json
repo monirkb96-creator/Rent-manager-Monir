@@ -1,0 +1,450 @@
+{
+  "entities": {
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Trusted Super Admin registry entry keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp via FieldValue.serverTimestamp()" }
+      },
+      "required": ["userId", "email", "createdAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Application user profile for Owner (admin) or Resident (tenant).",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "phone": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "tenant"] },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "tenantId": { "type": "string" },
+        "buildingId": { "type": "string" },
+        "flatId": { "type": "string" },
+        "preferredLanguage": { "type": "string", "enum": ["bn", "en"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "email", "displayName", "role", "status", "createdAt", "updatedAt"]
+    },
+    "Building": {
+      "title": "Building",
+      "description": "Multi-building property record managed by Super Admin.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "name": { "type": "string" },
+        "address": { "type": "string" },
+        "floorsCount": { "type": "integer" },
+        "totalFlats": { "type": "integer" },
+        "contactInfo": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "name", "address", "floorsCount", "totalFlats", "createdAt", "updatedAt"]
+    },
+    "Flat": {
+      "title": "Flat",
+      "description": "Apartment unit inside a building with rent, utility charges, and current tenant assignment.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "buildingId": { "type": "string" },
+        "buildingName": { "type": "string" },
+        "flatNumber": { "type": "string" },
+        "floorNumber": { "type": "integer" },
+        "monthlyRent": { "type": "number" },
+        "serviceCharge": { "type": "number" },
+        "electricityBill": { "type": "number" },
+        "waterBill": { "type": "number" },
+        "gasBill": { "type": "number" },
+        "otherCharges": { "type": "number" },
+        "totalMonthlyBill": { "type": "number" },
+        "amountPaid": { "type": "number" },
+        "remainingDue": { "type": "number" },
+        "paymentStatus": { "type": "string", "enum": ["paid", "partial", "unpaid", "vacant"] },
+        "tenantId": { "type": "string" },
+        "tenantUserId": { "type": "string" },
+        "tenantEmail": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "tenantPhone": { "type": "string" },
+        "isOccupied": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "buildingId", "buildingName", "flatNumber", "floorNumber", "monthlyRent", "serviceCharge", "totalMonthlyBill", "amountPaid", "remainingDue", "paymentStatus", "isOccupied", "createdAt", "updatedAt"]
+    },
+    "Tenant": {
+      "title": "Tenant",
+      "description": "Tenant account record linked to a building and flat.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "tenantUserId": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "nidNumber": { "type": "string" },
+        "buildingId": { "type": "string" },
+        "buildingName": { "type": "string" },
+        "flatId": { "type": "string" },
+        "flatNumber": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive", "vacated"] },
+        "moveInDate": { "type": "string" },
+        "moveOutDate": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "name", "email", "phone", "buildingId", "flatId", "status", "moveInDate", "createdAt", "updatedAt"]
+    },
+    "MonthlyBill": {
+      "title": "MonthlyBill",
+      "description": "Generated monthly rent and utility invoice for a flat and tenant.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "buildingId": { "type": "string" },
+        "buildingName": { "type": "string" },
+        "flatId": { "type": "string" },
+        "flatNumber": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "tenantUserId": { "type": "string" },
+        "tenantEmail": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "billingMonth": { "type": "string" },
+        "monthKey": { "type": "string" },
+        "monthlyRent": { "type": "number" },
+        "serviceCharge": { "type": "number" },
+        "electricityBill": { "type": "number" },
+        "waterBill": { "type": "number" },
+        "gasBill": { "type": "number" },
+        "otherCharges": { "type": "number" },
+        "previousDueCarriedForward": { "type": "number" },
+        "totalBill": { "type": "number" },
+        "amountPaid": { "type": "number" },
+        "remainingDue": { "type": "number" },
+        "status": { "type": "string", "enum": ["unpaid", "partial", "paid"] },
+        "dueDate": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "buildingId", "flatId", "tenantId", "billingMonth", "monthKey", "monthlyRent", "serviceCharge", "totalBill", "amountPaid", "remainingDue", "status", "createdAt", "updatedAt"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Online or manual payment transaction record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "billId": { "type": "string" },
+        "buildingId": { "type": "string" },
+        "buildingName": { "type": "string" },
+        "flatId": { "type": "string" },
+        "flatNumber": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "tenantUserId": { "type": "string" },
+        "tenantEmail": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "amount": { "type": "number" },
+        "method": { "type": "string", "enum": ["bkash", "nagad", "rocket", "bank_transfer", "card", "sslcommerz", "cash"] },
+        "transactionId": { "type": "string" },
+        "referenceNumber": { "type": "string" },
+        "gatewayStatus": { "type": "string", "enum": ["pending", "verified", "failed", "cancelled"] },
+        "verificationStatus": { "type": "string", "enum": ["pending", "verified", "rejected"] },
+        "paymentDate": { "type": "string" },
+        "notes": { "type": "string" },
+        "verifiedBy": { "type": "string" },
+        "receiptId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "billId", "buildingId", "flatId", "tenantId", "amount", "method", "transactionId", "gatewayStatus", "verificationStatus", "paymentDate", "createdAt", "updatedAt"]
+    },
+    "BankAccount": {
+      "title": "BankAccount",
+      "description": "Owner bank account with tracked opening balance and current balance.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "accountName": { "type": "string" },
+        "bankName": { "type": "string" },
+        "accountNumber": { "type": "string" },
+        "accountType": { "type": "string" },
+        "openingBalance": { "type": "number" },
+        "moneyReceived": { "type": "number" },
+        "moneyTransferred": { "type": "number" },
+        "bankExpenses": { "type": "number" },
+        "currentBalance": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "accountName", "bankName", "accountNumber", "accountType", "openingBalance", "currentBalance", "createdAt", "updatedAt"]
+    },
+    "BankTransaction": {
+      "title": "BankTransaction",
+      "description": "Immutable bank ledger entry.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "bankAccountId": { "type": "string" },
+        "bankAccountName": { "type": "string" },
+        "date": { "type": "string" },
+        "amount": { "type": "number" },
+        "transactionType": { "type": "string", "enum": ["received", "transferred", "expense"] },
+        "description": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "referenceNumber": { "type": "string" },
+        "buildingId": { "type": "string" },
+        "flatId": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "verificationStatus": { "type": "string", "enum": ["verified", "pending"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "bankAccountId", "date", "amount", "transactionType", "description", "paymentMethod", "referenceNumber", "createdBy", "verificationStatus", "createdAt"]
+    },
+    "CashTransaction": {
+      "title": "CashTransaction",
+      "description": "Cash-in-hand ledger entry.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "date": { "type": "string" },
+        "amount": { "type": "number" },
+        "transactionType": { "type": "string", "enum": ["cash_in", "cash_out"] },
+        "description": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "referenceNumber": { "type": "string" },
+        "buildingId": { "type": "string" },
+        "flatId": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "verificationStatus": { "type": "string", "enum": ["verified", "pending"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "date", "amount", "transactionType", "description", "paymentMethod", "referenceNumber", "createdBy", "verificationStatus", "createdAt"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Building maintenance and operational expense record.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "buildingId": { "type": "string" },
+        "buildingName": { "type": "string" },
+        "flatId": { "type": "string" },
+        "category": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "paymentSource": { "type": "string", "enum": ["cash", "bank"] },
+        "bankAccountId": { "type": "string" },
+        "description": { "type": "string" },
+        "referenceNumber": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "category", "amount", "date", "paymentSource", "description", "createdBy", "createdAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Direct owner-to-tenant message or payment reminder.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "senderUid": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderRole": { "type": "string", "enum": ["admin", "tenant"] },
+        "recipientUid": { "type": "string" },
+        "recipientEmail": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "buildingId": { "type": "string" },
+        "flatId": { "type": "string" },
+        "flatNumber": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "type": { "type": "string", "enum": ["personal", "reminder", "emergency", "maintenance"] },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "senderUid", "senderRole", "title", "body", "type", "isRead", "createdAt", "updatedAt"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Broadcast announcement from owner to tenants.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "targetScope": { "type": "string", "enum": ["all", "building"] },
+        "buildingId": { "type": "string" },
+        "buildingName": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "category": { "type": "string", "enum": ["notice", "emergency", "maintenance"] },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "targetScope", "title", "body", "category", "createdBy", "createdAt", "updatedAt"]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "In-app notification feed item.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "recipientUid": { "type": "string" },
+        "recipientEmail": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "type": { "type": "string" },
+        "relatedId": { "type": "string" },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "title", "body", "type", "isRead", "createdAt", "updatedAt"]
+    },
+    "Receipt": {
+      "title": "Receipt",
+      "description": "Digital PDF payment receipt metadata.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "paymentId": { "type": "string" },
+        "billId": { "type": "string" },
+        "receiptNumber": { "type": "string" },
+        "buildingId": { "type": "string" },
+        "buildingName": { "type": "string" },
+        "flatId": { "type": "string" },
+        "flatNumber": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "tenantUserId": { "type": "string" },
+        "tenantEmail": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "paymentDate": { "type": "string" },
+        "amountPaid": { "type": "number" },
+        "paymentMethod": { "type": "string" },
+        "transactionId": { "type": "string" },
+        "previousDue": { "type": "number" },
+        "remainingDue": { "type": "number" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "paymentId", "billId", "receiptNumber", "buildingName", "flatNumber", "tenantName", "paymentDate", "amountPaid", "paymentMethod", "transactionId", "previousDue", "remainingDue", "status", "createdAt", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable audit log entry for financial and admin actions.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "actorUid": { "type": "string" },
+        "actorEmail": { "type": "string" },
+        "actorRole": { "type": "string" },
+        "action": { "type": "string" },
+        "entityType": { "type": "string" },
+        "entityId": { "type": "string" },
+        "summary": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "actorUid", "actorEmail", "actorRole", "action", "entityType", "entityId", "summary", "createdAt"]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Application configuration, payment instructions, and billing preferences.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "appName": { "type": "string" },
+        "defaultLanguage": { "type": "string", "enum": ["bn", "en"] },
+        "sslCommerzStoreId": { "type": "string" },
+        "sslCommerzSandboxMode": { "type": "boolean" },
+        "bkashNumber": { "type": "string" },
+        "nagadNumber": { "type": "string" },
+        "rocketNumber": { "type": "string" },
+        "bankTransferInstructions": { "type": "string" },
+        "autoBillDay": { "type": "integer" },
+        "carryForwardEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerUid", "appName", "defaultLanguage", "sslCommerzSandboxMode", "autoBillDay", "carryForwardEnabled", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Trusted Super Admin UID registry."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profiles keyed by Firebase Auth UID."
+    },
+    "/buildings/{buildingId}": {
+      "schema": { "$ref": "#/entities/Building" },
+      "description": "Buildings owned and managed by Super Admin."
+    },
+    "/flats/{flatId}": {
+      "schema": { "$ref": "#/entities/Flat" },
+      "description": "Flats across buildings with billing and occupancy status."
+    },
+    "/tenants/{tenantId}": {
+      "schema": { "$ref": "#/entities/Tenant" },
+      "description": "Tenants assigned to buildings and flats."
+    },
+    "/monthly_bills/{billId}": {
+      "schema": { "$ref": "#/entities/MonthlyBill" },
+      "description": "Monthly rent and utility bills per flat."
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/Payment" },
+      "description": "Payment records (gateway and manual bank/MFS)."
+    },
+    "/bank_accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/BankAccount" },
+      "description": "Owner bank accounts and live balances."
+    },
+    "/bank_transactions/{txId}": {
+      "schema": { "$ref": "#/entities/BankTransaction" },
+      "description": "Bank account ledger entries."
+    },
+    "/cash_transactions/{txId}": {
+      "schema": { "$ref": "#/entities/CashTransaction" },
+      "description": "Cash account ledger entries."
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Operational and maintenance expenses."
+    },
+    "/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/Message" },
+      "description": "Direct owner-tenant messages and reminders."
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "Broadcast notices and emergency alerts."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationItem" },
+      "description": "Per-user in-app notifications."
+    },
+    "/receipts/{receiptId}": {
+      "schema": { "$ref": "#/entities/Receipt" },
+      "description": "Verified digital receipts."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable security and accounting audit trail."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/AppSettings" },
+      "description": "Central workspace settings document."
+    }
+  }
+}

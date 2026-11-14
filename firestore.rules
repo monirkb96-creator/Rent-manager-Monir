@@ -1,0 +1,710 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Core Security Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email_verified == true &&
+        (request.auth.token.email == 'MonirKb96@gmail.com' ||
+         request.auth.token.email == 'monirkb96@gmail.com');
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isVerifiedEmail(email) {
+      return isSignedIn() &&
+        request.auth.token.email_verified == true &&
+        email is string &&
+        email.size() > 0 &&
+        email.size() <= 200 &&
+        request.auth.token.email == email;
+    }
+
+    function isTenantResource(data) {
+      return isSignedIn() && (
+        data.tenantUserId == request.auth.uid ||
+        isVerifiedEmail(data.tenantEmail)
+      );
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isNonNegNumber(n) {
+      return n is number && n >= 0 && n <= 1000000000;
+    }
+
+    function isOptString(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    // --- Validation Blueprints ---
+    function isValidAdminUser(data) {
+      return data.userId is string && data.userId.size() <= 128 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        isValidTimestamp(data.createdAt);
+    }
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+        data.email is string && data.email.size() <= 200 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        isOptString(data, 'phone', 30) &&
+        data.role in ['admin', 'tenant'] &&
+        data.status in ['active', 'inactive'] &&
+        isOptString(data, 'tenantId', 128) &&
+        isOptString(data, 'buildingId', 128) &&
+        isOptString(data, 'flatId', 128) &&
+        (!('preferredLanguage' in data) || data.preferredLanguage in ['bn', 'en']) &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidBuilding(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 150 &&
+        data.address is string && data.address.size() >= 1 && data.address.size() <= 300 &&
+        data.floorsCount is int && data.floorsCount >= 1 && data.floorsCount <= 200 &&
+        data.totalFlats is int && data.totalFlats >= 1 && data.totalFlats <= 2000 &&
+        isOptString(data, 'contactInfo', 150) &&
+        isOptString(data, 'notes', 1000) &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidFlat(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.buildingId is string && isValidId(data.buildingId) &&
+        data.buildingName is string && data.buildingName.size() <= 150 &&
+        data.flatNumber is string && data.flatNumber.size() >= 1 && data.flatNumber.size() <= 30 &&
+        data.floorNumber is int && data.floorNumber >= 0 && data.floorNumber <= 200 &&
+        isNonNegNumber(data.monthlyRent) &&
+        isNonNegNumber(data.serviceCharge) &&
+        (!('electricityBill' in data) || isNonNegNumber(data.electricityBill)) &&
+        (!('waterBill' in data) || isNonNegNumber(data.waterBill)) &&
+        (!('gasBill' in data) || isNonNegNumber(data.gasBill)) &&
+        (!('otherCharges' in data) || isNonNegNumber(data.otherCharges)) &&
+        isNonNegNumber(data.totalMonthlyBill) &&
+        isNonNegNumber(data.amountPaid) &&
+        isNonNegNumber(data.remainingDue) &&
+        data.paymentStatus in ['paid', 'partial', 'unpaid', 'vacant'] &&
+        isOptString(data, 'tenantId', 128) &&
+        isOptString(data, 'tenantUserId', 128) &&
+        isOptString(data, 'tenantEmail', 200) &&
+        isOptString(data, 'tenantName', 120) &&
+        isOptString(data, 'tenantPhone', 30) &&
+        data.isOccupied is bool &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidTenant(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        isOptString(data, 'tenantUserId', 128) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.email is string && data.email.size() <= 200 &&
+        data.phone is string && data.phone.size() >= 1 && data.phone.size() <= 30 &&
+        isOptString(data, 'nidNumber', 50) &&
+        data.buildingId is string && data.buildingId.size() <= 128 &&
+        isOptString(data, 'buildingName', 150) &&
+        data.flatId is string && data.flatId.size() <= 128 &&
+        isOptString(data, 'flatNumber', 30) &&
+        data.status in ['active', 'inactive', 'vacated'] &&
+        data.moveInDate is string && data.moveInDate.size() <= 30 &&
+        isOptString(data, 'moveOutDate', 30) &&
+        isOptString(data, 'notes', 1000) &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidMonthlyBill(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.buildingId is string && isValidId(data.buildingId) &&
+        isOptString(data, 'buildingName', 150) &&
+        data.flatId is string && isValidId(data.flatId) &&
+        isOptString(data, 'flatNumber', 30) &&
+        data.tenantId is string && data.tenantId.size() <= 128 &&
+        isOptString(data, 'tenantUserId', 128) &&
+        isOptString(data, 'tenantEmail', 200) &&
+        isOptString(data, 'tenantName', 120) &&
+        data.billingMonth is string && data.billingMonth.size() >= 3 && data.billingMonth.size() <= 20 &&
+        data.monthKey is string && data.monthKey.size() >= 6 && data.monthKey.size() <= 15 &&
+        isNonNegNumber(data.monthlyRent) &&
+        isNonNegNumber(data.serviceCharge) &&
+        (!('electricityBill' in data) || isNonNegNumber(data.electricityBill)) &&
+        (!('waterBill' in data) || isNonNegNumber(data.waterBill)) &&
+        (!('gasBill' in data) || isNonNegNumber(data.gasBill)) &&
+        (!('otherCharges' in data) || isNonNegNumber(data.otherCharges)) &&
+        (!('previousDueCarriedForward' in data) || isNonNegNumber(data.previousDueCarriedForward)) &&
+        isNonNegNumber(data.totalBill) &&
+        isNonNegNumber(data.amountPaid) &&
+        isNonNegNumber(data.remainingDue) &&
+        data.status in ['unpaid', 'partial', 'paid'] &&
+        isOptString(data, 'dueDate', 30) &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidPayment(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.billId is string && isValidId(data.billId) &&
+        data.buildingId is string && isValidId(data.buildingId) &&
+        isOptString(data, 'buildingName', 150) &&
+        data.flatId is string && isValidId(data.flatId) &&
+        isOptString(data, 'flatNumber', 30) &&
+        data.tenantId is string && data.tenantId.size() <= 128 &&
+        isOptString(data, 'tenantUserId', 128) &&
+        isOptString(data, 'tenantEmail', 200) &&
+        isOptString(data, 'tenantName', 120) &&
+        data.amount is number && data.amount > 0 && data.amount <= 100000000 &&
+        data.method in ['bkash', 'nagad', 'rocket', 'bank_transfer', 'card', 'sslcommerz', 'cash'] &&
+        data.transactionId is string && data.transactionId.size() >= 3 && data.transactionId.size() <= 128 &&
+        isOptString(data, 'referenceNumber', 128) &&
+        data.gatewayStatus in ['pending', 'verified', 'failed', 'cancelled'] &&
+        data.verificationStatus in ['pending', 'verified', 'rejected'] &&
+        data.paymentDate is string && data.paymentDate.size() <= 30 &&
+        isOptString(data, 'notes', 500) &&
+        isOptString(data, 'verifiedBy', 128) &&
+        isOptString(data, 'receiptId', 128) &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidBankAccount(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.accountName is string && data.accountName.size() >= 1 && data.accountName.size() <= 150 &&
+        data.bankName is string && data.bankName.size() >= 1 && data.bankName.size() <= 150 &&
+        data.accountNumber is string && data.accountNumber.size() >= 1 && data.accountNumber.size() <= 60 &&
+        data.accountType is string && data.accountType.size() >= 1 && data.accountType.size() <= 60 &&
+        isNonNegNumber(data.openingBalance) &&
+        (!('moneyReceived' in data) || isNonNegNumber(data.moneyReceived)) &&
+        (!('moneyTransferred' in data) || isNonNegNumber(data.moneyTransferred)) &&
+        (!('bankExpenses' in data) || isNonNegNumber(data.bankExpenses)) &&
+        data.currentBalance is number && data.currentBalance >= -1000000000 && data.currentBalance <= 1000000000 &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidBankTransaction(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.bankAccountId is string && isValidId(data.bankAccountId) &&
+        isOptString(data, 'bankAccountName', 150) &&
+        data.date is string && data.date.size() <= 30 &&
+        data.amount is number && data.amount > 0 && data.amount <= 100000000 &&
+        data.transactionType in ['received', 'transferred', 'expense'] &&
+        data.description is string && data.description.size() >= 1 && data.description.size() <= 500 &&
+        data.paymentMethod is string && data.paymentMethod.size() <= 60 &&
+        data.referenceNumber is string && data.referenceNumber.size() <= 128 &&
+        isOptString(data, 'buildingId', 128) &&
+        isOptString(data, 'flatId', 128) &&
+        data.createdBy is string && data.createdBy.size() <= 128 &&
+        data.verificationStatus in ['verified', 'pending'] &&
+        isValidTimestamp(data.createdAt);
+    }
+
+    function isValidCashTransaction(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.date is string && data.date.size() <= 30 &&
+        data.amount is number && data.amount > 0 && data.amount <= 100000000 &&
+        data.transactionType in ['cash_in', 'cash_out'] &&
+        data.description is string && data.description.size() >= 1 && data.description.size() <= 500 &&
+        data.paymentMethod is string && data.paymentMethod.size() <= 60 &&
+        data.referenceNumber is string && data.referenceNumber.size() <= 128 &&
+        isOptString(data, 'buildingId', 128) &&
+        isOptString(data, 'flatId', 128) &&
+        data.createdBy is string && data.createdBy.size() <= 128 &&
+        data.verificationStatus in ['verified', 'pending'] &&
+        isValidTimestamp(data.createdAt);
+    }
+
+    function isValidExpense(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        isOptString(data, 'buildingId', 128) &&
+        isOptString(data, 'buildingName', 150) &&
+        isOptString(data, 'flatId', 128) &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 80 &&
+        data.amount is number && data.amount > 0 && data.amount <= 100000000 &&
+        data.date is string && data.date.size() <= 30 &&
+        data.paymentSource in ['cash', 'bank'] &&
+        isOptString(data, 'bankAccountId', 128) &&
+        data.description is string && data.description.size() >= 1 && data.description.size() <= 500 &&
+        isOptString(data, 'referenceNumber', 128) &&
+        data.createdBy is string && data.createdBy.size() <= 128 &&
+        isValidTimestamp(data.createdAt);
+    }
+
+    function isValidMessage(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.senderUid is string && data.senderUid.size() >= 1 && data.senderUid.size() <= 128 &&
+        isOptString(data, 'senderName', 120) &&
+        data.senderRole in ['admin', 'tenant'] &&
+        isOptString(data, 'recipientUid', 128) &&
+        isOptString(data, 'recipientEmail', 200) &&
+        isOptString(data, 'tenantId', 128) &&
+        isOptString(data, 'buildingId', 128) &&
+        isOptString(data, 'flatId', 128) &&
+        isOptString(data, 'flatNumber', 30) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.body is string && data.body.size() >= 1 && data.body.size() <= 2000 &&
+        data.type in ['personal', 'reminder', 'emergency', 'maintenance'] &&
+        data.isRead is bool &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidAnnouncement(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.targetScope in ['all', 'building'] &&
+        isOptString(data, 'buildingId', 128) &&
+        isOptString(data, 'buildingName', 150) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.body is string && data.body.size() >= 1 && data.body.size() <= 3000 &&
+        data.category in ['notice', 'emergency', 'maintenance'] &&
+        data.createdBy is string && data.createdBy.size() <= 128 &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidNotificationItem(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        isOptString(data, 'recipientUid', 128) &&
+        isOptString(data, 'recipientEmail', 200) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.body is string && data.body.size() >= 1 && data.body.size() <= 1000 &&
+        data.type is string && data.type.size() >= 1 && data.type.size() <= 60 &&
+        isOptString(data, 'relatedId', 128) &&
+        data.isRead is bool &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidReceipt(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+        data.paymentId is string && isValidId(data.paymentId) &&
+        data.billId is string && isValidId(data.billId) &&
+        data.receiptNumber is string && data.receiptNumber.size() >= 3 && data.receiptNumber.size() <= 80 &&
+        isOptString(data, 'buildingId', 128) &&
+        data.buildingName is string && data.buildingName.size() <= 150 &&
+        isOptString(data, 'flatId', 128) &&
+        data.flatNumber is string && data.flatNumber.size() <= 30 &&
+        isOptString(data, 'tenantId', 128) &&
+        isOptString(data, 'tenantUserId', 128) &&
+        isOptString(data, 'tenantEmail', 200) &&
+        data.tenantName is string && data.tenantName.size() <= 120 &&
+        data.paymentDate is string && data.paymentDate.size() <= 30 &&
+        isNonNegNumber(data.amountPaid) &&
+        data.paymentMethod is string && data.paymentMethod.size() <= 60 &&
+        data.transactionId is string && data.transactionId.size() <= 128 &&
+        isNonNegNumber(data.previousDue) &&
+        isNonNegNumber(data.remainingDue) &&
+        data.status is string && data.status.size() <= 40 &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidAuditLog(data) {
+      return data.ownerId is string && data.ownerId.size() <= 128 &&
+        data.actorUid is string && data.actorUid == request.auth.uid &&
+        data.actorEmail is string && data.actorEmail.size() <= 200 &&
+        data.actorRole in ['admin', 'tenant'] &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 100 &&
+        data.entityType is string && data.entityType.size() >= 1 && data.entityType.size() <= 60 &&
+        data.entityId is string && data.entityId.size() <= 128 &&
+        data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 500 &&
+        isValidTimestamp(data.createdAt);
+    }
+
+    function isValidAppSettings(data) {
+      return data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+        data.appName is string && data.appName.size() >= 1 && data.appName.size() <= 100 &&
+        data.defaultLanguage in ['bn', 'en'] &&
+        isOptString(data, 'sslCommerzStoreId', 100) &&
+        data.sslCommerzSandboxMode is bool &&
+        isOptString(data, 'bkashNumber', 40) &&
+        isOptString(data, 'nagadNumber', 40) &&
+        isOptString(data, 'rocketNumber', 40) &&
+        isOptString(data, 'bankTransferInstructions', 1000) &&
+        data.autoBillDay is int && data.autoBillDay >= 1 && data.autoBillDay <= 28 &&
+        data.carryForwardEnabled is bool &&
+        isValidTimestamp(data.createdAt) &&
+        isValidTimestamp(data.updatedAt);
+    }
+
+    // --- Collection Rules ---
+
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() &&
+        isValidId(userId) &&
+        request.auth.uid == userId &&
+        incoming().userId == request.auth.uid &&
+        incoming().keys().hasAll(['userId', 'email', 'createdAt']) &&
+        incoming().keys().hasOnly(['userId', 'email', 'createdAt']) &&
+        isValidAdminUser(incoming()) &&
+        (isBootstrappedAdmin() ||
+         (!exists(/databases/$(database)/documents/settings/app_config) &&
+          existsAfter(/databases/$(database)/documents/settings/app_config) &&
+          getAfter(/databases/$(database)/documents/settings/app_config).data.ownerUid == request.auth.uid));
+      allow update, delete: if isBootstrappedAdmin() && isValidId(userId);
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().keys().hasAll(['userId', 'email', 'displayName', 'role', 'status', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['userId', 'email', 'displayName', 'phone', 'role', 'status', 'tenantId', 'buildingId', 'flatId', 'preferredLanguage', 'createdAt', 'updatedAt']) &&
+        (
+          (request.auth.uid == userId &&
+           incoming().userId == request.auth.uid &&
+           (incoming().role == 'tenant' ||
+            isBootstrappedAdmin() ||
+            (!exists(/databases/$(database)/documents/settings/app_config) &&
+             existsAfter(/databases/$(database)/documents/settings/app_config) &&
+             getAfter(/databases/$(database)/documents/settings/app_config).data.ownerUid == request.auth.uid)))
+          || isAdmin()
+        );
+      allow update: if isSignedIn() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        (
+          isAdmin() ||
+          (isOwner(userId) &&
+           incoming().role == existing().role &&
+           incoming().status == existing().status &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone', 'preferredLanguage', 'tenantId', 'buildingId', 'flatId', 'updatedAt']))
+        );
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    match /buildings/{buildingId} {
+      allow get: if isValidId(buildingId) && (
+        isAdmin() ||
+        (isSignedIn() &&
+         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.buildingId == buildingId)
+      );
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(buildingId) &&
+        isValidBuilding(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'name', 'address', 'floorsCount', 'totalFlats', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'name', 'address', 'floorsCount', 'totalFlats', 'contactInfo', 'notes', 'createdAt', 'updatedAt']);
+      allow update: if isAdmin() &&
+        isValidId(buildingId) &&
+        isValidBuilding(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'address', 'floorsCount', 'totalFlats', 'contactInfo', 'notes', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(buildingId);
+    }
+
+    match /flats/{flatId} {
+      allow get: if isValidId(flatId) && (isAdmin() || isTenantResource(existing()));
+      allow list: if isAdmin() || isTenantResource(existing());
+      allow create: if isAdmin() &&
+        isValidId(flatId) &&
+        isValidFlat(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'buildingId', 'buildingName', 'flatNumber', 'floorNumber', 'monthlyRent', 'serviceCharge', 'totalMonthlyBill', 'amountPaid', 'remainingDue', 'paymentStatus', 'isOccupied', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'buildingId', 'buildingName', 'flatNumber', 'floorNumber', 'monthlyRent', 'serviceCharge', 'electricityBill', 'waterBill', 'gasBill', 'otherCharges', 'totalMonthlyBill', 'amountPaid', 'remainingDue', 'paymentStatus', 'tenantId', 'tenantUserId', 'tenantEmail', 'tenantName', 'tenantPhone', 'isOccupied', 'createdAt', 'updatedAt']) &&
+        exists(/databases/$(database)/documents/buildings/$(incoming().buildingId));
+      allow update: if isSignedIn() &&
+        isValidId(flatId) &&
+        isValidFlat(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        (
+          isAdmin() ||
+          (isVerifiedEmail(existing().tenantEmail) &&
+           existing().tenantUserId == '' &&
+           incoming().tenantUserId == request.auth.uid &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['tenantUserId', 'updatedAt']))
+        );
+      allow delete: if isAdmin() && isValidId(flatId);
+    }
+
+    match /tenants/{tenantId} {
+      allow get: if isValidId(tenantId) && (isAdmin() || isTenantResource(existing()) || isVerifiedEmail(existing().email));
+      allow list: if isAdmin() || isTenantResource(existing()) || isVerifiedEmail(existing().email);
+      allow create: if isAdmin() &&
+        isValidId(tenantId) &&
+        isValidTenant(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'name', 'email', 'phone', 'buildingId', 'flatId', 'status', 'moveInDate', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'tenantUserId', 'name', 'email', 'phone', 'nidNumber', 'buildingId', 'buildingName', 'flatId', 'flatNumber', 'status', 'moveInDate', 'moveOutDate', 'notes', 'createdAt', 'updatedAt']);
+      allow update: if isSignedIn() &&
+        isValidId(tenantId) &&
+        isValidTenant(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        (
+          isAdmin() ||
+          (isVerifiedEmail(existing().email) &&
+           existing().tenantUserId == '' &&
+           incoming().tenantUserId == request.auth.uid &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['tenantUserId', 'updatedAt']))
+        );
+      allow delete: if isAdmin() && isValidId(tenantId);
+    }
+
+    match /monthly_bills/{billId} {
+      allow get: if isValidId(billId) && (isAdmin() || isTenantResource(existing()));
+      allow list: if isAdmin() || isTenantResource(existing());
+      allow create: if isAdmin() &&
+        isValidId(billId) &&
+        isValidMonthlyBill(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'buildingId', 'flatId', 'tenantId', 'billingMonth', 'monthKey', 'monthlyRent', 'serviceCharge', 'totalBill', 'amountPaid', 'remainingDue', 'status', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'buildingId', 'buildingName', 'flatId', 'flatNumber', 'tenantId', 'tenantUserId', 'tenantEmail', 'tenantName', 'billingMonth', 'monthKey', 'monthlyRent', 'serviceCharge', 'electricityBill', 'waterBill', 'gasBill', 'otherCharges', 'previousDueCarriedForward', 'totalBill', 'amountPaid', 'remainingDue', 'status', 'dueDate', 'createdAt', 'updatedAt']);
+      allow update: if isSignedIn() &&
+        isValidId(billId) &&
+        isValidMonthlyBill(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        (
+          isAdmin() ||
+          (isVerifiedEmail(existing().tenantEmail) &&
+           existing().tenantUserId == '' &&
+           incoming().tenantUserId == request.auth.uid &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['tenantUserId', 'updatedAt']))
+        );
+      allow delete: if isAdmin() && isValidId(billId);
+    }
+
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && (isAdmin() || isTenantResource(existing()));
+      allow list: if isAdmin() || isTenantResource(existing());
+      allow create: if isSignedIn() &&
+        isValidId(paymentId) &&
+        isValidPayment(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'billId', 'buildingId', 'flatId', 'tenantId', 'amount', 'method', 'transactionId', 'gatewayStatus', 'verificationStatus', 'paymentDate', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'billId', 'buildingId', 'buildingName', 'flatId', 'flatNumber', 'tenantId', 'tenantUserId', 'tenantEmail', 'tenantName', 'amount', 'method', 'transactionId', 'referenceNumber', 'gatewayStatus', 'verificationStatus', 'paymentDate', 'notes', 'verifiedBy', 'receiptId', 'createdAt', 'updatedAt']) &&
+        exists(/databases/$(database)/documents/monthly_bills/$(incoming().billId)) &&
+        (
+          isAdmin() ||
+          (incoming().tenantUserId == request.auth.uid &&
+           incoming().verificationStatus == 'pending' &&
+           incoming().gatewayStatus == 'pending')
+        );
+      allow update: if isSignedIn() &&
+        isValidId(paymentId) &&
+        isValidPayment(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        (
+          isAdmin() ||
+          (existing().verificationStatus == 'pending' &&
+           existing().tenantUserId == request.auth.uid &&
+           incoming().gatewayStatus == 'cancelled' &&
+           incoming().verificationStatus == 'rejected' &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['gatewayStatus', 'verificationStatus', 'updatedAt']))
+        );
+      allow delete: if isAdmin() && isValidId(paymentId);
+    }
+
+    match /bank_accounts/{accountId} {
+      allow get: if isValidId(accountId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(accountId) &&
+        isValidBankAccount(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'accountName', 'bankName', 'accountNumber', 'accountType', 'openingBalance', 'currentBalance', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'accountName', 'bankName', 'accountNumber', 'accountType', 'openingBalance', 'moneyReceived', 'moneyTransferred', 'bankExpenses', 'currentBalance', 'createdAt', 'updatedAt']);
+      allow update: if isAdmin() &&
+        isValidId(accountId) &&
+        isValidBankAccount(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(accountId);
+    }
+
+    match /bank_transactions/{txId} {
+      allow get: if isValidId(txId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(txId) &&
+        isValidBankTransaction(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'bankAccountId', 'date', 'amount', 'transactionType', 'description', 'paymentMethod', 'referenceNumber', 'createdBy', 'verificationStatus', 'createdAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'bankAccountId', 'bankAccountName', 'date', 'amount', 'transactionType', 'description', 'paymentMethod', 'referenceNumber', 'buildingId', 'flatId', 'createdBy', 'verificationStatus', 'createdAt']);
+      allow update, delete: if isAdmin() && isValidId(txId);
+    }
+
+    match /cash_transactions/{txId} {
+      allow get: if isValidId(txId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(txId) &&
+        isValidCashTransaction(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'date', 'amount', 'transactionType', 'description', 'paymentMethod', 'referenceNumber', 'createdBy', 'verificationStatus', 'createdAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'date', 'amount', 'transactionType', 'description', 'paymentMethod', 'referenceNumber', 'buildingId', 'flatId', 'createdBy', 'verificationStatus', 'createdAt']);
+      allow update, delete: if isAdmin() && isValidId(txId);
+    }
+
+    match /expenses/{expenseId} {
+      allow get: if isValidId(expenseId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(expenseId) &&
+        isValidExpense(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'category', 'amount', 'date', 'paymentSource', 'description', 'createdBy', 'createdAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'buildingId', 'buildingName', 'flatId', 'category', 'amount', 'date', 'paymentSource', 'bankAccountId', 'description', 'referenceNumber', 'createdBy', 'createdAt']);
+      allow update, delete: if isAdmin() && isValidId(expenseId);
+    }
+
+    match /messages/{messageId} {
+      allow get: if isValidId(messageId) && (
+        isAdmin() ||
+        (isSignedIn() && (existing().recipientUid == request.auth.uid || existing().senderUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail)))
+      );
+      allow list: if isAdmin() || (
+        isSignedIn() && (existing().recipientUid == request.auth.uid || existing().senderUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail))
+      );
+      allow create: if isSignedIn() &&
+        isValidId(messageId) &&
+        isValidMessage(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'senderUid', 'senderRole', 'title', 'body', 'type', 'isRead', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'senderUid', 'senderName', 'senderRole', 'recipientUid', 'recipientEmail', 'tenantId', 'buildingId', 'flatId', 'flatNumber', 'title', 'body', 'type', 'isRead', 'createdAt', 'updatedAt']) &&
+        (
+          isAdmin() ||
+          (incoming().senderUid == request.auth.uid && incoming().senderRole == 'tenant')
+        );
+      allow update: if isSignedIn() &&
+        isValidId(messageId) &&
+        isValidMessage(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        (
+          isAdmin() ||
+          ((existing().recipientUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail)) &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'updatedAt']))
+        );
+      allow delete: if isAdmin() && isValidId(messageId);
+    }
+
+    match /announcements/{announcementId} {
+      allow get: if isValidId(announcementId) && (
+        isAdmin() || (isSignedIn() && existing().targetScope == 'all')
+      );
+      allow list: if isAdmin() || (isSignedIn() && existing().targetScope == 'all');
+      allow create: if isAdmin() &&
+        isValidId(announcementId) &&
+        isValidAnnouncement(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'targetScope', 'title', 'body', 'category', 'createdBy', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'targetScope', 'buildingId', 'buildingName', 'title', 'body', 'category', 'createdBy', 'createdAt', 'updatedAt']);
+      allow update: if isAdmin() &&
+        isValidId(announcementId) &&
+        isValidAnnouncement(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(announcementId);
+    }
+
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && (
+        isAdmin() ||
+        (isSignedIn() && (existing().recipientUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail)))
+      );
+      allow list: if isAdmin() || (
+        isSignedIn() && (existing().recipientUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail))
+      );
+      allow create: if isSignedIn() &&
+        isValidId(notificationId) &&
+        isValidNotificationItem(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'title', 'body', 'type', 'isRead', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'recipientUid', 'recipientEmail', 'title', 'body', 'type', 'relatedId', 'isRead', 'createdAt', 'updatedAt']) &&
+        (isAdmin() || incoming().type == 'payment_submitted');
+      allow update: if isSignedIn() &&
+        isValidId(notificationId) &&
+        isValidNotificationItem(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        (
+          isAdmin() ||
+          ((existing().recipientUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail)) &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'updatedAt']))
+        );
+      allow delete: if isAdmin() && isValidId(notificationId);
+    }
+
+    match /receipts/{receiptId} {
+      allow get: if isValidId(receiptId) && (isAdmin() || isTenantResource(existing()));
+      allow list: if isAdmin() || isTenantResource(existing());
+      allow create: if isAdmin() &&
+        isValidId(receiptId) &&
+        isValidReceipt(incoming()) &&
+        incoming().keys().hasAll(['ownerId', 'paymentId', 'billId', 'receiptNumber', 'buildingName', 'flatNumber', 'tenantName', 'paymentDate', 'amountPaid', 'paymentMethod', 'transactionId', 'previousDue', 'remainingDue', 'status', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'paymentId', 'billId', 'receiptNumber', 'buildingId', 'buildingName', 'flatId', 'flatNumber', 'tenantId', 'tenantUserId', 'tenantEmail', 'tenantName', 'paymentDate', 'amountPaid', 'paymentMethod', 'transactionId', 'previousDue', 'remainingDue', 'status', 'createdAt', 'updatedAt']);
+      allow update: if isAdmin() &&
+        isValidId(receiptId) &&
+        isValidReceipt(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(receiptId);
+    }
+
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isSignedIn() &&
+        isValidId(logId) &&
+        incoming().keys().hasAll(['ownerId', 'actorUid', 'actorEmail', 'actorRole', 'action', 'entityType', 'entityId', 'summary', 'createdAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'actorUid', 'actorEmail', 'actorRole', 'action', 'entityType', 'entityId', 'summary', 'createdAt']) &&
+        isValidAuditLog(incoming());
+      allow update, delete: if false;
+    }
+
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId) && (
+        isAdmin() || (isSignedIn() && settingId == 'app_config')
+      );
+      allow list: if isAdmin();
+      allow create: if isSignedIn() &&
+        isValidId(settingId) &&
+        settingId == 'app_config' &&
+        isValidAppSettings(incoming()) &&
+        incoming().keys().hasAll(['ownerUid', 'appName', 'defaultLanguage', 'sslCommerzSandboxMode', 'autoBillDay', 'carryForwardEnabled', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerUid', 'appName', 'defaultLanguage', 'sslCommerzStoreId', 'sslCommerzSandboxMode', 'bkashNumber', 'nagadNumber', 'rocketNumber', 'bankTransferInstructions', 'autoBillDay', 'carryForwardEnabled', 'createdAt', 'updatedAt']) &&
+        (isAdmin() || (!exists(/databases/$(database)/documents/settings/app_config) && incoming().ownerUid == request.auth.uid));
+      allow update: if isAdmin() &&
+        isValidId(settingId) &&
+        isValidAppSettings(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(settingId);
+    }
+  }
+}

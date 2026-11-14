@@ -1,0 +1,6 @@
+{
+  "name": "Smart Rent Manager",
+  "description": "Complete building, apartment, tenant, billing, accounting, and payment management app in Bangla and English for Bangladesh (BDT ৳).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
