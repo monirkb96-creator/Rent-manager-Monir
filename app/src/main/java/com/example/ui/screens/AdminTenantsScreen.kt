@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Person
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -40,6 +42,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -47,6 +50,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -74,6 +78,7 @@ fun AdminTenantsScreen(
     onSaveAndAssignTenant: (Tenant, Flat) -> Unit,
     onToggleStatus: (Tenant) -> Unit,
     onVacateTenant: (Tenant) -> Unit,
+    onDeleteTenant: (Tenant) -> Unit = {},
     onSendPersonalMessage: (Tenant, String, String, String) -> Unit,
     onSendAnnouncement: (String, String, String, Building?) -> Unit
 ) {
@@ -88,6 +93,7 @@ fun AdminTenantsScreen(
     var messageTargetTenant by remember { mutableStateOf<Tenant?>(null) }
     var historyTargetTenant by remember { mutableStateOf<Tenant?>(null) }
     var showAnnouncementDialog by remember { mutableStateOf(false) }
+    var pendingDeleteTenant by remember { mutableStateOf<Tenant?>(null) }
 
     val filteredTenants = state.tenants.filter { t ->
         val matchesStatus = filterStatus == "all" || t.status == filterStatus
@@ -202,7 +208,21 @@ fun AdminTenantsScreen(
                                     )
                                 }
                             }
-                            StatusBadge(tenant.status)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                StatusBadge(tenant.status)
+                                IconButton(
+                                    onClick = { pendingDeleteTenant = tenant },
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("delete_tenant_${tenant.id}")
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Delete,
+                                        contentDescription = strings.delete,
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
                         }
 
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -346,6 +366,42 @@ fun AdminTenantsScreen(
             onSend = { title, body, cat, bldg ->
                 showAnnouncementDialog = false
                 onSendAnnouncement(title, body, cat, bldg)
+            }
+        )
+    }
+
+    pendingDeleteTenant?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteTenant = null },
+            title = { Text(strings.delete) },
+            text = {
+                Text(
+                    if (language == AppLanguage.BN) {
+                        "আপনি কি নিশ্চিতভাবে ভাড়াটিয়া \"${target.name}\" কে মুছে ফেলতে চান?"
+                    } else {
+                        "Are you sure you want to delete tenant \"${target.name}\"?"
+                    }
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingDeleteTenant = null
+                        onDeleteTenant(target)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    modifier = Modifier.testTag("confirm_delete_tenant_btn")
+                ) {
+                    Text(strings.delete)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteTenant = null }) {
+                    Text(strings.cancel)
+                }
             }
         )
     }

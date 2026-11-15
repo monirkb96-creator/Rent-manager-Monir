@@ -57,11 +57,14 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import com.example.data.model.AppSettings
 import com.example.data.model.BankAccount
+import com.example.data.model.BankTransaction
 import com.example.data.model.Building
+import com.example.data.model.CashTransaction
 import com.example.data.model.Expense
 import com.example.data.model.Flat
 import com.example.data.model.MonthlyBill
 import com.example.data.model.PaymentRecord
+import com.example.data.model.Receipt
 import com.example.data.model.Tenant
 import com.example.data.model.UserProfile
 import com.example.data.remote.GatewayInitiationResult
@@ -456,9 +459,11 @@ fun AdminNavHost(
     onSaveBuilding: (Building) -> Unit,
     onDeleteBuilding: (Building) -> Unit,
     onSaveFlat: (Flat) -> Unit,
+    onDeleteFlat: (Flat) -> Unit = {},
     onSaveAndAssignTenant: (Tenant, Flat) -> Unit,
     onToggleTenantStatus: (Tenant) -> Unit,
     onVacateTenant: (Tenant) -> Unit,
+    onDeleteTenant: (Tenant) -> Unit = {},
     onSendPersonalMessage: (Tenant, String, String, String) -> Unit,
     onSendAnnouncement: (String, String, String, Building?) -> Unit,
     onRecordDirectPayment: (MonthlyBill, Double, String, String, BankAccount?, String) -> Unit,
@@ -466,6 +471,12 @@ fun AdminNavHost(
     onRecordBankTx: (BankAccount, Double, String, String, String) -> Unit,
     onRecordCashTx: (Double, String, String, String) -> Unit,
     onAddExpense: (Expense, BankAccount?) -> Unit,
+    onDeletePayment: (PaymentRecord) -> Unit = {},
+    onDeleteBankAccount: (BankAccount) -> Unit = {},
+    onDeleteBankTx: (BankTransaction) -> Unit = {},
+    onDeleteCashTx: (CashTransaction) -> Unit = {},
+    onDeleteExpense: (Expense) -> Unit = {},
+    onDeleteReceipt: (Receipt) -> Unit = {},
     onSaveSettings: (AppSettings) -> Unit,
     onBuildBackupJson: () -> String,
     onSignOut: () -> Unit,
@@ -499,6 +510,7 @@ fun AdminNavHost(
                 onSaveBuilding = onSaveBuilding,
                 onDeleteBuilding = onDeleteBuilding,
                 onSaveFlat = onSaveFlat,
+                onDeleteFlat = onDeleteFlat,
                 onAssignTenantToFlat = onSaveAndAssignTenant
             )
         }
@@ -508,6 +520,7 @@ fun AdminNavHost(
                 onSaveAndAssignTenant = onSaveAndAssignTenant,
                 onToggleStatus = onToggleTenantStatus,
                 onVacateTenant = onVacateTenant,
+                onDeleteTenant = onDeleteTenant,
                 onSendPersonalMessage = onSendPersonalMessage,
                 onSendAnnouncement = onSendAnnouncement
             )
@@ -521,7 +534,13 @@ fun AdminNavHost(
                 onAddBankAccount = onAddBankAccount,
                 onRecordBankTx = onRecordBankTx,
                 onRecordCashTx = onRecordCashTx,
-                onAddExpense = onAddExpense
+                onAddExpense = onAddExpense,
+                onDeletePayment = onDeletePayment,
+                onDeleteBankAccount = onDeleteBankAccount,
+                onDeleteBankTx = onDeleteBankTx,
+                onDeleteCashTx = onDeleteCashTx,
+                onDeleteExpense = onDeleteExpense,
+                onDeleteReceipt = onDeleteReceipt
             )
         }
         composable(route = AdminDestination.Settings.route) {

@@ -514,6 +514,60 @@ class RentRepository(
         handleFirestoreError(it, OperationType.UPDATE, "tenants/${tenant.id}")
     }
 
+    suspend fun deleteFlat(flat: Flat): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(flat.id.isNotBlank())
+        db.collection("flats").document(flat.id).delete().await()
+        writeAuditLog(uid, "admin", "DELETE_FLAT", "flat", flat.id, "Deleted flat ${flat.buildingName} ${flat.flatNumber}")
+    }.onFailure {
+        handleFirestoreError(it, OperationType.DELETE, "flats/${flat.id}")
+    }
+
+    suspend fun deleteTenant(tenant: Tenant): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(tenant.id.isNotBlank())
+        val batch = db.batch()
+        if (tenant.flatId.isNotBlank() && tenant.status != "vacated") {
+            val flatRef = db.collection("flats").document(tenant.flatId)
+            val flatSnap = flatRef.get().await()
+            if (flatSnap.exists()) {
+                batch.update(
+                    flatRef,
+                    mapOf(
+                        "isOccupied" to false,
+                        "tenantId" to "",
+                        "tenantUserId" to "",
+                        "tenantEmail" to "",
+                        "tenantName" to "",
+                        "tenantPhone" to "",
+                        "paymentStatus" to "vacant",
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+            }
+        }
+        if (tenant.tenantUserId.isNotBlank()) {
+            val userRef = db.collection("users").document(tenant.tenantUserId)
+            val userSnap = userRef.get().await()
+            if (userSnap.exists()) {
+                batch.update(
+                    userRef,
+                    mapOf(
+                        "tenantId" to "",
+                        "buildingId" to "",
+                        "flatId" to "",
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+            }
+        }
+        batch.delete(db.collection("tenants").document(tenant.id))
+        batch.commit().await()
+        writeAuditLog(uid, "admin", "DELETE_TENANT", "tenant", tenant.id, "Deleted tenant ${tenant.name}")
+    }.onFailure {
+        handleFirestoreError(it, OperationType.DELETE, "tenants/${tenant.id}")
+    }
+
     // --- AUTOMATIC MONTHLY BILL GENERATION (IDEMPOTENT / NO DUPLICATES) ---
     suspend fun generateMonthlyBillsForOccupiedFlats(
         flats: List<Flat>,
@@ -1209,6 +1263,208 @@ class RentRepository(
         expRef.id
     }.onFailure {
         handleFirestoreError(it, OperationType.WRITE, "expenses")
+    }
+
+    suspend fun deleteBankAccount(account: BankAccount): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(account.id.isNotBlank())
+        val relatedTxs = db.collection("bank_transactions")
+            .whereEqualTo("bankAccountId", account.id)
+            .get()
+            .await()
+        val batch = db.batch()
+        relatedTxs.documents.forEach { doc -> batch.delete(doc.reference) }
+        batch.delete(db.collection("bank_accounts").document(account.id))
+        batch.commit().await()
+        writeAuditLog(uid, "admin", "DELETE_BANK_ACCOUNT", "bank_account", account.id, "Deleted bank account ${account.accountName}")
+    }.onFailure {
+        handleFirestoreError(it, OperationType.DELETE, "bank_accounts/${account.id}")
+    }
+
+    suspend fun deleteBankTransaction(
+        tx: BankTransaction,
+        account: BankAccount?
+    ): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(tx.id.isNotBlank())
+        val batch = db.batch()
+        batch.delete(db.collection("bank_transactions").document(tx.id))
+        if (account != null && account.id.isNotBlank()) {
+            val newReceived = if (tx.transactionType == "received") (account.moneyReceived - tx.amount).coerceAtLeast(0.0) else account.moneyReceived
+            val newTransferred = if (tx.transactionType == "transferred") (account.moneyTransferred - tx.amount).coerceAtLeast(0.0) else account.moneyTransferred
+            val newExpenses = if (tx.transactionType == "expense") (account.bankExpenses - tx.amount).coerceAtLeast(0.0) else account.bankExpenses
+            val newBalance = if (tx.transactionType == "received") account.currentBalance - tx.amount else account.currentBalance + tx.amount
+            batch.update(
+                db.collection("bank_accounts").document(account.id),
+                mapOf(
+                    "moneyReceived" to newReceived,
+                    "moneyTransferred" to newTransferred,
+                    "bankExpenses" to newExpenses,
+                    "currentBalance" to newBalance,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+        }
+        batch.commit().await()
+        writeAuditLog(uid, "admin", "DELETE_BANK_TX", "bank_transaction", tx.id, "Deleted bank transaction ${tx.description}")
+    }.onFailure {
+        handleFirestoreError(it, OperationType.DELETE, "bank_transactions/${tx.id}")
+    }
+
+    suspend fun deleteCashTransaction(tx: CashTransaction): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(tx.id.isNotBlank())
+        db.collection("cash_transactions").document(tx.id).delete().await()
+        writeAuditLog(uid, "admin", "DELETE_CASH_TX", "cash_transaction", tx.id, "Deleted cash transaction ${tx.description}")
+    }.onFailure {
+        handleFirestoreError(it, OperationType.DELETE, "cash_transactions/${tx.id}")
+    }
+
+    suspend fun deleteExpense(
+        expense: Expense,
+        bankAccount: BankAccount?
+    ): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(expense.id.isNotBlank())
+        val expectedDesc = "Expense (${expense.category}): ${expense.description}"
+        val batch = db.batch()
+        batch.delete(db.collection("expenses").document(expense.id))
+
+        if (expense.paymentSource == "bank" && bankAccount != null && bankAccount.id.isNotBlank()) {
+            batch.update(
+                db.collection("bank_accounts").document(bankAccount.id),
+                mapOf(
+                    "bankExpenses" to (bankAccount.bankExpenses - expense.amount).coerceAtLeast(0.0),
+                    "currentBalance" to bankAccount.currentBalance + expense.amount,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+            val matchingBankTx = db.collection("bank_transactions")
+                .whereEqualTo("bankAccountId", bankAccount.id)
+                .get()
+                .await()
+                .documents
+                .firstOrNull {
+                    it.getString("transactionType") == "expense" &&
+                        (it.getDouble("amount") ?: 0.0) == expense.amount &&
+                        it.getString("description") == expectedDesc
+                }
+            matchingBankTx?.let { batch.delete(it.reference) }
+        } else if (expense.paymentSource == "cash") {
+            val matchingCashTx = db.collection("cash_transactions")
+                .whereEqualTo("transactionType", "cash_out")
+                .get()
+                .await()
+                .documents
+                .firstOrNull {
+                    (it.getDouble("amount") ?: 0.0) == expense.amount &&
+                        it.getString("description") == expectedDesc
+                }
+            matchingCashTx?.let { batch.delete(it.reference) }
+        }
+
+        batch.commit().await()
+        writeAuditLog(uid, "admin", "DELETE_EXPENSE", "expense", expense.id, "Deleted expense ${expense.category}: BDT ${expense.amount}")
+    }.onFailure {
+        handleFirestoreError(it, OperationType.DELETE, "expenses/${expense.id}")
+    }
+
+    suspend fun deletePayment(
+        payment: PaymentRecord,
+        bill: MonthlyBill?,
+        bankAccount: BankAccount?
+    ): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(payment.id.isNotBlank())
+        val batch = db.batch()
+        batch.delete(db.collection("payments").document(payment.id))
+
+        if (payment.receiptId.isNotBlank()) {
+            val rcpRef = db.collection("receipts").document(payment.receiptId)
+            if (rcpRef.get().await().exists()) {
+                batch.delete(rcpRef)
+            }
+        }
+
+        if (payment.verificationStatus == "verified" && bill != null && bill.id.isNotBlank()) {
+            val newPaid = (bill.amountPaid - payment.amount).coerceAtLeast(0.0)
+            val newRemaining = (bill.totalBill - newPaid).coerceAtLeast(0.0)
+            val newStatus = when {
+                newRemaining <= 0.0 && bill.totalBill > 0.0 -> "paid"
+                newPaid > 0.0 -> "partial"
+                else -> "unpaid"
+            }
+            val billRef = db.collection("monthly_bills").document(bill.id)
+            if (billRef.get().await().exists()) {
+                batch.update(
+                    billRef,
+                    mapOf(
+                        "amountPaid" to newPaid,
+                        "remainingDue" to newRemaining,
+                        "status" to newStatus,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+            }
+            if (bill.flatId.isNotBlank()) {
+                val flatRef = db.collection("flats").document(bill.flatId)
+                if (flatRef.get().await().exists()) {
+                    batch.update(
+                        flatRef,
+                        mapOf(
+                            "amountPaid" to newPaid,
+                            "remainingDue" to newRemaining,
+                            "paymentStatus" to newStatus,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                }
+            }
+            if (payment.method == "cash") {
+                val matchingCash = db.collection("cash_transactions")
+                    .whereEqualTo("referenceNumber", payment.transactionId)
+                    .get()
+                    .await()
+                    .documents
+                    .firstOrNull()
+                matchingCash?.let { batch.delete(it.reference) }
+            } else if (bankAccount != null && bankAccount.id.isNotBlank()) {
+                batch.update(
+                    db.collection("bank_accounts").document(bankAccount.id),
+                    mapOf(
+                        "moneyReceived" to (bankAccount.moneyReceived - payment.amount).coerceAtLeast(0.0),
+                        "currentBalance" to bankAccount.currentBalance - payment.amount,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                val refMatch = payment.referenceNumber.ifBlank { payment.transactionId }
+                val matchingBank = db.collection("bank_transactions")
+                    .whereEqualTo("bankAccountId", bankAccount.id)
+                    .get()
+                    .await()
+                    .documents
+                    .firstOrNull {
+                        it.getString("transactionType") == "received" &&
+                            (it.getString("referenceNumber") == refMatch ||
+                                it.getString("referenceNumber") == payment.transactionId)
+                    }
+                matchingBank?.let { batch.delete(it.reference) }
+            }
+        }
+
+        batch.commit().await()
+        writeAuditLog(uid, "admin", "DELETE_PAYMENT", "payment", payment.id, "Deleted payment ${payment.transactionId}")
+    }.onFailure {
+        handleFirestoreError(it, OperationType.DELETE, "payments/${payment.id}")
+    }
+
+    suspend fun deleteReceipt(receipt: Receipt): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(receipt.id.isNotBlank())
+        db.collection("receipts").document(receipt.id).delete().await()
+        writeAuditLog(uid, "admin", "DELETE_RECEIPT", "receipt", receipt.id, "Deleted receipt ${receipt.receiptNumber}")
+    }.onFailure {
+        handleFirestoreError(it, OperationType.DELETE, "receipts/${receipt.id}")
     }
 
     // --- MESSAGING & ANNOUNCEMENTS ---

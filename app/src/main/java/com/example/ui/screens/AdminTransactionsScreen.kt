@@ -26,15 +26,18 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -42,6 +45,7 @@ import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -56,7 +60,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.data.model.BankAccount
+import com.example.data.model.BankTransaction
 import com.example.data.model.Building
+import com.example.data.model.CashTransaction
 import com.example.data.model.Expense
 import com.example.data.model.MonthlyBill
 import com.example.data.model.PaymentRecord
@@ -81,7 +87,13 @@ fun AdminTransactionsScreen(
     onAddBankAccount: (BankAccount) -> Unit,
     onRecordBankTx: (BankAccount, Double, String, String, String) -> Unit,
     onRecordCashTx: (Double, String, String, String) -> Unit,
-    onAddExpense: (Expense, BankAccount?) -> Unit
+    onAddExpense: (Expense, BankAccount?) -> Unit,
+    onDeletePayment: (PaymentRecord) -> Unit = {},
+    onDeleteBankAccount: (BankAccount) -> Unit = {},
+    onDeleteBankTx: (BankTransaction) -> Unit = {},
+    onDeleteCashTx: (CashTransaction) -> Unit = {},
+    onDeleteExpense: (Expense) -> Unit = {},
+    onDeleteReceipt: (Receipt) -> Unit = {}
 ) {
     val strings = LocalStrings.current
     val language = LocalLanguage.current
@@ -102,6 +114,7 @@ fun AdminTransactionsScreen(
     var showCashTxDialog by remember { mutableStateOf(false) }
     var showExpenseDialog by remember { mutableStateOf(false) }
     var selectedReceipt by remember { mutableStateOf<Receipt?>(null) }
+    var pendingDelete by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
 
     Column(
         modifier = Modifier
@@ -148,14 +161,30 @@ fun AdminTransactionsScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Column {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text("${p.buildingName} - ${p.flatNumber}", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
                                         Text("${p.tenantName} • ${p.method.uppercase()} • ${p.paymentDate}", style = MaterialTheme.typography.bodySmall)
                                         Text("Tx: ${p.transactionId} | Ref: ${p.referenceNumber}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                    Column(horizontalAlignment = Alignment.End) {
-                                        Text(FormatUtils.formatBdt(p.amount, language), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.primary)
-                                        StatusBadge(p.verificationStatus)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            Text(FormatUtils.formatBdt(p.amount, language), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.primary)
+                                            StatusBadge(p.verificationStatus)
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                pendingDelete = "${p.buildingName} - ${p.flatNumber} (${FormatUtils.formatBdt(p.amount, language)})" to {
+                                                    onDeletePayment(p)
+                                                }
+                                            },
+                                            modifier = Modifier.minimumInteractiveComponentSize().testTag("delete_payment_${p.id}")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Delete,
+                                                contentDescription = strings.delete,
+                                                tint = MaterialTheme.colorScheme.error
+                                            )
+                                        }
                                     }
                                 }
                                 if (p.verificationStatus == "pending") {
@@ -200,8 +229,12 @@ fun AdminTransactionsScreen(
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                         ) {
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Column {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(acc.accountName, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
                                         Text("${acc.bankName} • ${acc.accountType} (${acc.accountNumber})", style = MaterialTheme.typography.bodySmall)
                                     }
@@ -216,8 +249,28 @@ fun AdminTransactionsScreen(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                OutlinedButton(onClick = { bankTxTarget = acc }) {
-                                    Text(strings.addBankEntry)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    OutlinedButton(onClick = { bankTxTarget = acc }) {
+                                        Text(strings.addBankEntry)
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            pendingDelete = "${acc.accountName} (${acc.bankName})" to {
+                                                onDeleteBankAccount(acc)
+                                            }
+                                        },
+                                        modifier = Modifier.minimumInteractiveComponentSize().testTag("delete_bank_account_${acc.id}")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Delete,
+                                            contentDescription = strings.delete,
+                                            tint = MaterialTheme.colorScheme.error
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -228,7 +281,14 @@ fun AdminTransactionsScreen(
                             subtitle = "${tx.bankAccountName} • ${tx.date} • Ref: ${tx.referenceNumber}",
                             amount = tx.amount,
                             isPositive = tx.transactionType == "received",
-                            language = language
+                            language = language,
+                            deleteTag = "delete_bank_tx_${tx.id}",
+                            deleteContentDescription = strings.delete,
+                            onDelete = {
+                                pendingDelete = "${tx.description} (${FormatUtils.formatBdt(tx.amount, language)})" to {
+                                    onDeleteBankTx(tx)
+                                }
+                            }
                         )
                     }
                 }
@@ -266,7 +326,14 @@ fun AdminTransactionsScreen(
                             subtitle = "${tx.date} • ${tx.transactionType} • Ref: ${tx.referenceNumber}",
                             amount = tx.amount,
                             isPositive = tx.transactionType == "cash_in",
-                            language = language
+                            language = language,
+                            deleteTag = "delete_cash_tx_${tx.id}",
+                            deleteContentDescription = strings.delete,
+                            onDelete = {
+                                pendingDelete = "${tx.description} (${FormatUtils.formatBdt(tx.amount, language)})" to {
+                                    onDeleteCashTx(tx)
+                                }
+                            }
                         )
                     }
                 }
@@ -288,7 +355,14 @@ fun AdminTransactionsScreen(
                             subtitle = "${exp.date} • ${exp.buildingName.ifBlank { "General" }} • ${exp.paymentSource.uppercase()}",
                             amount = exp.amount,
                             isPositive = false,
-                            language = language
+                            language = language,
+                            deleteTag = "delete_expense_${exp.id}",
+                            deleteContentDescription = strings.delete,
+                            onDelete = {
+                                pendingDelete = "${exp.category}: ${exp.description} (${FormatUtils.formatBdt(exp.amount, language)})" to {
+                                    onDeleteExpense(exp)
+                                }
+                            }
                         )
                     }
                 }
@@ -306,18 +380,38 @@ fun AdminTransactionsScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
                                     Icon(Icons.Filled.ReceiptLong, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                                     Column {
                                         Text("${rcp.receiptNumber} • ${rcp.flatNumber}", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
                                         Text("${rcp.tenantName} • ${rcp.paymentDate}", style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
-                                Text(
-                                    FormatUtils.formatBdt(rcp.amountPaid, language),
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        FormatUtils.formatBdt(rcp.amountPaid, language),
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            pendingDelete = "${rcp.receiptNumber} (${FormatUtils.formatBdt(rcp.amountPaid, language)})" to {
+                                                onDeleteReceipt(rcp)
+                                            }
+                                        },
+                                        modifier = Modifier.minimumInteractiveComponentSize().testTag("delete_receipt_${rcp.id}")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Delete,
+                                            contentDescription = strings.delete,
+                                            tint = MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -391,6 +485,44 @@ fun AdminTransactionsScreen(
             }
         )
     }
+
+    pendingDelete?.let { (label, confirmAction) ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = {
+                Text(if (language == AppLanguage.BN) "তথ্যটি মুছে ফেলবেন?" else "Delete this entry?")
+            },
+            text = {
+                Text(
+                    if (language == AppLanguage.BN) {
+                        "\"$label\" স্থায়ীভাবে মুছে ফেলা হবে এবং সংশ্লিষ্ট ব্যালেন্স স্বয়ংক্রিয়ভাবে সমন্বয় হবে।"
+                    } else {
+                        "\"$label\" will be permanently deleted and related balances will be adjusted."
+                    }
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingDelete = null
+                        confirmAction()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    modifier = Modifier.testTag("confirm_delete_button")
+                ) {
+                    Text(strings.delete)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text(strings.cancel)
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -399,7 +531,10 @@ private fun LedgerRowCard(
     subtitle: String,
     amount: Double,
     isPositive: Boolean,
-    language: AppLanguage
+    language: AppLanguage,
+    deleteTag: String,
+    deleteContentDescription: String,
+    onDelete: () -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(14.dp),
@@ -407,7 +542,7 @@ private fun LedgerRowCard(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            modifier = Modifier.fillMaxWidth().padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -415,11 +550,23 @@ private fun LedgerRowCard(
                 Text(title, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
                 Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Text(
-                text = "${if (isPositive) "+" else "-"}${FormatUtils.formatBdt(amount, language)}",
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                color = if (isPositive) StatusPaidText else StatusUnpaidText
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "${if (isPositive) "+" else "-"}${FormatUtils.formatBdt(amount, language)}",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    color = if (isPositive) StatusPaidText else StatusUnpaidText
+                )
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.minimumInteractiveComponentSize().testTag(deleteTag)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = deleteContentDescription,
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
         }
     }
 }

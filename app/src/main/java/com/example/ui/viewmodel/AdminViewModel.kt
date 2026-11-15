@@ -185,6 +185,10 @@ class AdminViewModel(
         repository.saveFlat(flat)
     }
 
+    fun deleteFlat(flat: Flat) = runAction("Flat deleted") {
+        repository.deleteFlat(flat)
+    }
+
     fun saveAndAssignTenant(tenant: Tenant, flat: Flat) = runAction("Tenant assigned to ${flat.flatNumber}") {
         repository.saveAndAssignTenant(tenant, flat)
     }
@@ -195,6 +199,10 @@ class AdminViewModel(
 
     fun vacateTenant(tenant: Tenant) = runAction("Flat vacated") {
         repository.vacateTenant(tenant)
+    }
+
+    fun deleteTenant(tenant: Tenant) = runAction("Tenant deleted") {
+        repository.deleteTenant(tenant)
     }
 
     fun generateMonthlyBills(carryForward: Boolean) {
@@ -258,6 +266,55 @@ class AdminViewModel(
     fun addExpense(expense: Expense, bankAccount: BankAccount?) =
         runAction("Expense recorded") {
             repository.addExpense(expense, bankAccount)
+        }
+
+    fun deleteBankAccount(account: BankAccount) =
+        runAction("Bank account deleted") {
+            repository.deleteBankAccount(account)
+        }
+
+    fun deleteBankTx(tx: BankTransaction) {
+        val account = uiState.value.bankAccounts.firstOrNull { it.id == tx.bankAccountId }
+        runAction("Bank transaction deleted") {
+            repository.deleteBankTransaction(tx, account)
+        }
+    }
+
+    fun deleteCashTx(tx: CashTransaction) =
+        runAction("Cash transaction deleted") {
+            repository.deleteCashTransaction(tx)
+        }
+
+    fun deleteExpense(expense: Expense) {
+        val account = if (expense.bankAccountId.isNotBlank()) {
+            uiState.value.bankAccounts.firstOrNull { it.id == expense.bankAccountId }
+        } else null
+        runAction("Expense deleted") {
+            repository.deleteExpense(expense, account)
+        }
+    }
+
+    fun deletePayment(payment: PaymentRecord) {
+        val snap = uiState.value
+        val bill = snap.bills.firstOrNull { it.id == payment.billId }
+        val refMatch = payment.referenceNumber.ifBlank { payment.transactionId }
+        val matchedTx = snap.bankTransactions.firstOrNull {
+            it.transactionType == "received" &&
+                (it.referenceNumber == refMatch || it.referenceNumber == payment.transactionId)
+        }
+        val account = if (matchedTx != null) {
+            snap.bankAccounts.firstOrNull { it.id == matchedTx.bankAccountId }
+        } else {
+            null
+        }
+        runAction("Payment deleted") {
+            repository.deletePayment(payment, bill, account)
+        }
+    }
+
+    fun deleteReceipt(receipt: Receipt) =
+        runAction("Receipt deleted") {
+            repository.deleteReceipt(receipt)
         }
 
     fun sendPersonalMessage(tenant: Tenant, title: String, body: String, type: String = "personal") =

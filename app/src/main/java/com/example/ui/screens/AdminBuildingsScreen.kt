@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FloatingActionButton
@@ -46,6 +47,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,6 +79,7 @@ fun AdminBuildingsScreen(
     onSaveBuilding: (Building) -> Unit,
     onDeleteBuilding: (Building) -> Unit,
     onSaveFlat: (Flat) -> Unit,
+    onDeleteFlat: (Flat) -> Unit = {},
     onAssignTenantToFlat: (Tenant, Flat) -> Unit
 ) {
     val strings = LocalStrings.current
@@ -92,6 +95,7 @@ fun AdminBuildingsScreen(
     var showFlatDialog by remember { mutableStateOf(false) }
 
     var assignFlatTarget by remember { mutableStateOf<Flat?>(null) }
+    var pendingDelete by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
 
     if (selectedBuilding != null) {
         BackHandler { selectedBuildingId = null }
@@ -222,7 +226,14 @@ fun AdminBuildingsScreen(
                                         ) {
                                             Icon(Icons.Filled.Edit, contentDescription = strings.editBuilding)
                                         }
-                                        IconButton(onClick = { onDeleteBuilding(building) }) {
+                                        IconButton(
+                                            onClick = {
+                                                pendingDelete = building.name to { onDeleteBuilding(building) }
+                                            },
+                                            modifier = Modifier
+                                                .minimumInteractiveComponentSize()
+                                                .testTag("delete_building_${building.id}")
+                                        ) {
                                             Icon(
                                                 Icons.Filled.Delete,
                                                 contentDescription = strings.deleteBuilding,
@@ -380,7 +391,10 @@ fun AdminBuildingsScreen(
                                     )
                                 }
 
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     OutlinedButton(
                                         onClick = {
                                             editingFlat = flat
@@ -401,6 +415,20 @@ fun AdminBuildingsScreen(
                                             Spacer(Modifier.width(4.dp))
                                             Text(strings.addTenant)
                                         }
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            pendingDelete = "Flat ${flat.flatNumber}" to { onDeleteFlat(flat) }
+                                        },
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("delete_flat_${flat.id}")
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.Delete,
+                                            contentDescription = strings.delete,
+                                            tint = MaterialTheme.colorScheme.error
+                                        )
                                     }
                                 }
                             }
@@ -442,6 +470,42 @@ fun AdminBuildingsScreen(
             onAssign = { tenant ->
                 assignFlatTarget = null
                 onAssignTenantToFlat(tenant, targetFlat)
+            }
+        )
+    }
+
+    pendingDelete?.let { (label, action) ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text(strings.delete) },
+            text = {
+                Text(
+                    if (language == AppLanguage.BN) {
+                        "আপনি কি নিশ্চিতভাবে \"$label\" মুছে ফেলতে চান?"
+                    } else {
+                        "Are you sure you want to delete \"$label\"?"
+                    }
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingDelete = null
+                        action()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    modifier = Modifier.testTag("confirm_delete_building_or_flat_btn")
+                ) {
+                    Text(strings.delete)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text(strings.cancel)
+                }
             }
         )
     }
