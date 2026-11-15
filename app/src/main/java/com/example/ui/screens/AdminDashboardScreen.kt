@@ -43,6 +43,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -97,6 +98,7 @@ fun AdminDashboardScreen(
     var carryForwardChecked by remember { mutableStateOf(state.settings.carryForwardEnabled) }
     var showNotificationsDialog by remember { mutableStateOf(false) }
     var showReportsDialog by remember { mutableStateOf(false) }
+    var verifyBankTargetPayment by remember { mutableStateOf<PaymentRecord?>(null) }
 
     LazyColumn(
         modifier = Modifier
@@ -387,7 +389,11 @@ fun AdminDashboardScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
-                                    onVerifyPayment(payment, state.bankAccounts.firstOrNull())
+                                    if (payment.method != "cash" && state.bankAccounts.size > 1) {
+                                        verifyBankTargetPayment = payment
+                                    } else {
+                                        onVerifyPayment(payment, state.bankAccounts.firstOrNull())
+                                    }
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -583,6 +589,42 @@ fun AdminDashboardScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showNotificationsDialog = false }) { Text(strings.close) }
+            }
+        )
+    }
+
+    verifyBankTargetPayment?.let { targetPayment ->
+        var pickedBank by remember(targetPayment.id) { mutableStateOf(state.bankAccounts.firstOrNull()) }
+        AlertDialog(
+            onDismissRequest = { verifyBankTargetPayment = null },
+            title = {
+                Text(if (language == AppLanguage.BN) "কোন ব্যাংকে জমা হবে?" else "Select Deposit Bank Account")
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "${targetPayment.buildingName} - ${targetPayment.flatNumber} • ${FormatUtils.formatBdt(targetPayment.amount, language)}",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    state.bankAccounts.forEach { acc ->
+                        FilterChip(
+                            selected = pickedBank?.id == acc.id,
+                            onClick = { pickedBank = acc },
+                            label = { Text("${acc.accountName} (${acc.bankName})") }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        verifyBankTargetPayment = null
+                        onVerifyPayment(targetPayment, pickedBank)
+                    }
+                ) { Text(strings.verifyPayment) }
+            },
+            dismissButton = {
+                TextButton(onClick = { verifyBankTargetPayment = null }) { Text(strings.cancel) }
             }
         )
     }

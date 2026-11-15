@@ -64,6 +64,7 @@ import com.example.data.model.BankTransaction
 import com.example.data.model.Building
 import com.example.data.model.CashTransaction
 import com.example.data.model.Expense
+import com.example.data.model.Flat
 import com.example.data.model.MonthlyBill
 import com.example.data.model.PaymentRecord
 import com.example.data.model.Receipt
@@ -86,6 +87,9 @@ fun AdminTransactionsScreen(
     onRecordDirectPayment: (MonthlyBill, Double, String, String, BankAccount?, String) -> Unit,
     onAddBankAccount: (BankAccount) -> Unit,
     onRecordBankTx: (BankAccount, Double, String, String, String) -> Unit,
+    onRecordBankTxWithFlat: (BankAccount, Double, String, String, String, String, String) -> Unit = { acc, amt, type, desc, ref, _, _ ->
+        onRecordBankTx(acc, amt, type, desc, ref)
+    },
     onRecordCashTx: (Double, String, String, String) -> Unit,
     onAddExpense: (Expense, BankAccount?) -> Unit,
     onDeletePayment: (PaymentRecord) -> Unit = {},
@@ -111,6 +115,8 @@ fun AdminTransactionsScreen(
     var showDirectPaymentDialog by remember { mutableStateOf(false) }
     var showAddBankDialog by remember { mutableStateOf(false) }
     var bankTxTarget by remember { mutableStateOf<BankAccount?>(null) }
+    var selectedBankDetailId by remember { mutableStateOf<String?>(null) }
+    var verifyBankTargetPayment by remember { mutableStateOf<PaymentRecord?>(null) }
     var showCashTxDialog by remember { mutableStateOf(false) }
     var showExpenseDialog by remember { mutableStateOf(false) }
     var selectedReceipt by remember { mutableStateOf<Receipt?>(null) }
@@ -190,7 +196,13 @@ fun AdminTransactionsScreen(
                                 if (p.verificationStatus == "pending") {
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         Button(
-                                            onClick = { onVerifyPayment(p, state.bankAccounts.firstOrNull()) },
+                                            onClick = {
+                                                if (p.method != "cash" && state.bankAccounts.size > 1) {
+                                                    verifyBankTargetPayment = p
+                                                } else {
+                                                    onVerifyPayment(p, state.bankAccounts.firstOrNull())
+                                                }
+                                            },
                                             modifier = Modifier.weight(1f)
                                         ) {
                                             Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -223,7 +235,14 @@ fun AdminTransactionsScreen(
                         }
                     }
                     items(state.bankAccounts, key = { it.id }) { acc ->
+                        val depositCount = state.bankTransactions.count {
+                            it.bankAccountId == acc.id && it.transactionType == "received"
+                        }
                         Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { selectedBankDetailId = acc.id }
+                                .testTag("bank_account_card_${acc.id}"),
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
@@ -245,17 +264,45 @@ fun AdminTransactionsScreen(
                                     )
                                 }
                                 Text(
-                                    text = "Opening: ${FormatUtils.formatBdt(acc.openingBalance, language)} | Received: ${FormatUtils.formatBdt(acc.moneyReceived, language)} | Expenses: ${FormatUtils.formatBdt(acc.bankExpenses, language)}",
+                                    text = if (language == AppLanguage.BN) {
+                                        "শুরু: ${FormatUtils.formatBdt(acc.openingBalance, language)} | মোট জমা: ${FormatUtils.formatBdt(acc.moneyReceived, language)} (${FormatUtils.formatInt(depositCount, language)}টি)"
+                                    } else {
+                                        "Opening: ${FormatUtils.formatBdt(acc.openingBalance, language)} | Received: ${FormatUtils.formatBdt(acc.moneyReceived, language)} ($depositCount)"
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                Text(
+                                    text = if (language == AppLanguage.BN) {
+                                        "কোন তলা ও ফ্ল্যাট থেকে জমা এসেছে দেখতে কার্ডে চাপ দিন"
+                                    } else {
+                                        "Tap card to view deposits by floor & flat"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    OutlinedButton(onClick = { bankTxTarget = acc }) {
-                                        Text(strings.addBankEntry)
+                                    OutlinedButton(
+                                        onClick = { bankTxTarget = acc },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(
+                                            text = if (language == AppLanguage.BN) "ব্যাংক জমা যোগ" else strings.addBankEntry,
+                                            maxLines = 1
+                                        )
+                                    }
+                                    OutlinedButton(
+                                        onClick = { selectedBankDetailId = acc.id },
+                                        modifier = Modifier.weight(1f).testTag("view_bank_details_${acc.id}")
+                                    ) {
+                                        Text(
+                                            text = if (language == AppLanguage.BN) "তলা/ফ্ল্যাট দেখুন" else "Floor & Flat",
+                                            maxLines = 1
+                                        )
                                     }
                                     IconButton(
                                         onClick = {
@@ -275,10 +322,27 @@ fun AdminTransactionsScreen(
                             }
                         }
                     }
-                    items(state.bankTransactions, key = { it.id }) { tx ->
+                    val visibleBankTxs = state.bankTransactions.filter { it.transactionType != "expense" }
+                    items(visibleBankTxs, key = { it.id }) { tx ->
+                        val flatInfo = remember(tx, state.flats, state.buildings, state.payments) {
+                            resolveBankTxFlatDetails(tx, state)
+                        }
+                        val locationTag = flatInfo?.let { info ->
+                            val fl = info.floorNumber?.let {
+                                if (language == AppLanguage.BN) "তলা ${FormatUtils.formatInt(it, language)}" else "Floor $it"
+                            }
+                            val fn = info.flatNumber.takeIf { it.isNotBlank() }?.let {
+                                if (language == AppLanguage.BN) "ফ্ল্যাট $it" else "Flat $it"
+                            }
+                            listOfNotNull(info.buildingName.takeIf { it.isNotBlank() }, fl, fn).joinToString(" • ")
+                        }.orEmpty()
+                        val subtitleParts = listOfNotNull(
+                            locationTag.takeIf { it.isNotBlank() },
+                            "${tx.bankAccountName} • ${tx.date}${if (tx.referenceNumber.isNotBlank()) " • Ref: ${tx.referenceNumber}" else ""}"
+                        ).joinToString("\n")
                         LedgerRowCard(
                             title = tx.description,
-                            subtitle = "${tx.bankAccountName} • ${tx.date} • Ref: ${tx.referenceNumber}",
+                            subtitle = subtitleParts,
                             amount = tx.amount,
                             isPositive = tx.transactionType == "received",
                             language = language,
@@ -445,10 +509,64 @@ fun AdminTransactionsScreen(
     bankTxTarget?.let { acc ->
         BankTxDialog(
             account = acc,
+            flats = state.flats,
             onDismiss = { bankTxTarget = null },
-            onSave = { amt, type, desc, ref ->
+            onSave = { amt, type, desc, ref, bId, fId ->
                 bankTxTarget = null
-                onRecordBankTx(acc, amt, type, desc, ref)
+                onRecordBankTxWithFlat(acc, amt, type, desc, ref, bId, fId)
+            }
+        )
+    }
+
+    selectedBankDetailId?.let { bankId ->
+        val liveAccount = state.bankAccounts.firstOrNull { it.id == bankId }
+        if (liveAccount != null) {
+            BankAccountDetailDialog(
+                account = liveAccount,
+                state = state,
+                onDismiss = { selectedBankDetailId = null },
+                onAddDeposit = { acc -> bankTxTarget = acc },
+                onRequestDeleteTx = { tx ->
+                    pendingDelete = "${tx.description} (${FormatUtils.formatBdt(tx.amount, language)})" to {
+                        onDeleteBankTx(tx)
+                    }
+                }
+            )
+        }
+    }
+
+    verifyBankTargetPayment?.let { targetPayment ->
+        var pickedBank by remember(targetPayment.id) { mutableStateOf(state.bankAccounts.firstOrNull()) }
+        AlertDialog(
+            onDismissRequest = { verifyBankTargetPayment = null },
+            title = {
+                Text(if (language == AppLanguage.BN) "কোন ব্যাংকে জমা হবে?" else "Select Deposit Bank Account")
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "${targetPayment.buildingName} - ${targetPayment.flatNumber} • ${FormatUtils.formatBdt(targetPayment.amount, language)}",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    state.bankAccounts.forEach { acc ->
+                        FilterChip(
+                            selected = pickedBank?.id == acc.id,
+                            onClick = { pickedBank = acc },
+                            label = { Text("${acc.accountName} (${acc.bankName})") }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        verifyBankTargetPayment = null
+                        onVerifyPayment(targetPayment, pickedBank)
+                    }
+                ) { Text(strings.verifyPayment) }
+            },
+            dismissButton = {
+                TextButton(onClick = { verifyBankTargetPayment = null }) { Text(strings.cancel) }
             }
         )
     }
@@ -579,6 +697,7 @@ private fun DirectPaymentDialog(
     onSave: (MonthlyBill, Double, String, String, BankAccount?, String) -> Unit
 ) {
     val strings = LocalStrings.current
+    val language = LocalLanguage.current
     var selectedBill by remember { mutableStateOf(bills.firstOrNull()) }
     var amount by remember { mutableStateOf(selectedBill?.remainingDue?.toInt()?.toString() ?: "") }
     var method by remember { mutableStateOf("cash") }
@@ -586,15 +705,24 @@ private fun DirectPaymentDialog(
     var selectedBank by remember { mutableStateOf(bankAccounts.firstOrNull()) }
     var notes by remember { mutableStateOf("") }
 
+    val paymentMethods = listOf(
+        "cash" to (if (language == AppLanguage.BN) "নগদ (Cash)" else "Cash"),
+        "bank_transfer" to (if (language == AppLanguage.BN) "ব্যাংক ট্রান্সফার" else "Bank Transfer"),
+        "bkash" to (if (language == AppLanguage.BN) "বিকাশ (bKash)" else "bKash"),
+        "nagad" to (if (language == AppLanguage.BN) "নগদ (Nagad)" else "Nagad")
+    )
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Record Payment") },
+        title = {
+            Text(if (language == AppLanguage.BN) "ভাড়া আদায় রেকর্ড করুন" else "Record Payment")
+        },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                bills.take(6).forEach { b ->
+                bills.take(8).forEach { b ->
                     FilterChip(
                         selected = selectedBill?.id == b.id,
                         onClick = {
@@ -604,9 +732,50 @@ private fun DirectPaymentDialog(
                         label = { Text("${b.flatNumber} (${b.billingMonth}) - Due ${b.remainingDue.toInt()}") }
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("cash", "bkash", "nagad", "bank_transfer").forEach { m ->
-                        FilterChip(selected = method == m, onClick = { method = m }, label = { Text(m) })
+                Text(
+                    text = if (language == AppLanguage.BN) "পেমেন্ট মাধ্যম:" else "Payment Method:",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                )
+                paymentMethods.forEach { (m, label) ->
+                    FilterChip(
+                        selected = method == m,
+                        onClick = { method = m },
+                        label = { Text(label) }
+                    )
+                }
+                if (method != "cash") {
+                    if (bankAccounts.isNotEmpty()) {
+                        Text(
+                            text = if (language == AppLanguage.BN) "কোন ব্যাংক অ্যাকাউন্টে জমা হবে:" else "Deposit into Bank Account:",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        bankAccounts.forEach { acc ->
+                            FilterChip(
+                                selected = selectedBank?.id == acc.id,
+                                onClick = { selectedBank = acc },
+                                label = { Text("${acc.accountName} (${acc.bankName})") }
+                            )
+                        }
+                        Text(
+                            text = if (language == AppLanguage.BN) {
+                                "টাকাটি স্বয়ংক্রিয়ভাবে নির্বাচিত ব্যাংক অ্যাকাউন্টে যোগ হবে।"
+                            } else {
+                                "This payment will automatically be added to the selected bank account."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StatusPaidText
+                        )
+                    } else {
+                        Text(
+                            text = if (language == AppLanguage.BN) {
+                                "ব্যাংক অ্যাকাউন্টে টাকা যোগ করতে চাইলে আগে 'ব্যাংক অ্যাকাউন্ট' ট্যাব থেকে একটি ব্যাংক অ্যাকাউন্ট যোগ করুন।"
+                            } else {
+                                "Add a Bank Account first if you want non-cash payments tracked inside a bank account."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 OutlinedTextField(
@@ -699,33 +868,113 @@ private fun AddBankAccountDialog(
 @Composable
 private fun BankTxDialog(
     account: BankAccount,
+    flats: List<Flat>,
     onDismiss: () -> Unit,
-    onSave: (Double, String, String, String) -> Unit
+    onSave: (Double, String, String, String, String, String) -> Unit
 ) {
     val strings = LocalStrings.current
+    val language = LocalLanguage.current
     var type by remember { mutableStateOf("received") }
+    var selectedFlat by remember { mutableStateOf<Flat?>(null) }
     var amount by remember { mutableStateOf("") }
     var desc by remember { mutableStateOf("") }
     var ref by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("${strings.addBankEntry} (${account.accountName})") },
+        title = {
+            Text(
+                if (language == AppLanguage.BN) {
+                    "ব্যাংকে জমা / লেনদেন (${account.accountName})"
+                } else {
+                    "${strings.addBankEntry} (${account.accountName})"
+                }
+            )
+        },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("received", "transferred", "expense").forEach { t ->
-                        FilterChip(selected = type == t, onClick = { type = t }, label = { Text(t) })
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = type == "received",
+                    onClick = { type = "received" },
+                    label = {
+                        Text(if (language == AppLanguage.BN) "ব্যাংকে জমা (+ টাকা যোগ হবে)" else "Deposit (+ Added to Bank)")
+                    }
+                )
+                FilterChip(
+                    selected = type == "transferred",
+                    onClick = { type = "transferred" },
+                    label = {
+                        Text(if (language == AppLanguage.BN) "ব্যাংক থেকে উত্তোলন (-)" else "Withdraw / Transfer Out (-)")
+                    }
+                )
+                if (flats.isNotEmpty() && type == "received") {
+                    Text(
+                        text = if (language == AppLanguage.BN) "কোন তলা ও ফ্ল্যাট থেকে জমা (ঐচ্ছিক):" else "Select Floor & Flat (Optional):",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    FilterChip(
+                        selected = selectedFlat == null,
+                        onClick = { selectedFlat = null },
+                        label = { Text(if (language == AppLanguage.BN) "সাধারণ জমা (ফ্ল্যাট ছাড়া)" else "General Deposit") }
+                    )
+                    flats.forEach { flat ->
+                        val flatLabel = if (language == AppLanguage.BN) {
+                            "${flat.buildingName} • তলা ${FormatUtils.formatInt(flat.floorNumber, language)} • ফ্ল্যাট ${flat.flatNumber}"
+                        } else {
+                            "${flat.buildingName} • Floor ${flat.floorNumber} • Flat ${flat.flatNumber}"
+                        }
+                        FilterChip(
+                            selected = selectedFlat?.id == flat.id,
+                            onClick = {
+                                selectedFlat = flat
+                                if (desc.isBlank()) {
+                                    desc = if (language == AppLanguage.BN) {
+                                        "ভাড়া জমা - তলা ${FormatUtils.formatInt(flat.floorNumber, language)}, ফ্ল্যাট ${flat.flatNumber}"
+                                    } else {
+                                        "Rent deposit - Floor ${flat.floorNumber}, Flat ${flat.flatNumber}"
+                                    }
+                                }
+                            },
+                            label = { Text(flatLabel) }
+                        )
                     }
                 }
-                OutlinedTextField(value = amount, onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text(strings.paymentAmount) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text(strings.description) }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = ref, onValueChange = { ref = it }, label = { Text(strings.transactionRef) }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = amount,
+                    onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } },
+                    label = { Text(strings.paymentAmount) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = desc,
+                    onValueChange = { desc = it },
+                    label = { Text(strings.description) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = ref,
+                    onValueChange = { ref = it },
+                    label = { Text(strings.transactionRef) },
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         },
         confirmButton = {
             Button(
-                onClick = { onSave(amount.toDoubleOrNull() ?: 0.0, type, desc, ref) },
+                onClick = {
+                    onSave(
+                        amount.toDoubleOrNull() ?: 0.0,
+                        type,
+                        desc,
+                        ref,
+                        selectedFlat?.buildingId.orEmpty(),
+                        selectedFlat?.id.orEmpty()
+                    )
+                },
                 enabled = (amount.toDoubleOrNull() ?: 0.0) > 0.0 && desc.isNotBlank()
             ) { Text(strings.save) }
         },
@@ -776,6 +1025,7 @@ private fun AddExpenseDialog(
     onSave: (Expense, BankAccount?) -> Unit
 ) {
     val strings = LocalStrings.current
+    val language = LocalLanguage.current
     val categories = listOf("Building Maintenance", "Electricity Expenses", "Water Expenses", "Cleaning", "Security", "Repairs", "Other Expenses")
     var category by remember { mutableStateOf(categories.first()) }
     var selectedBuilding by remember { mutableStateOf(buildings.firstOrNull()) }
@@ -798,6 +1048,19 @@ private fun AddExpenseDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = source == "cash", onClick = { source = "cash" }, label = { Text(strings.cash) })
                     FilterChip(selected = source == "bank", onClick = { source = "bank" }, label = { Text("Bank") })
+                }
+                if (source == "bank" && bankAccounts.isNotEmpty()) {
+                    Text(
+                        text = if (language == AppLanguage.BN) "কোন ব্যাংক থেকে খরচ কাটা হবে:" else "Select Bank Account:",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    bankAccounts.forEach { acc ->
+                        FilterChip(
+                            selected = selectedBank?.id == acc.id,
+                            onClick = { selectedBank = acc },
+                            label = { Text("${acc.accountName} (${acc.bankName})") }
+                        )
+                    }
                 }
                 if (buildings.isNotEmpty()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -826,7 +1089,7 @@ private fun AddExpenseDialog(
                         if (source == "bank") selectedBank else null
                     )
                 },
-                enabled = (amount.toDoubleOrNull() ?: 0.0) > 0.0 && desc.isNotBlank()
+                enabled = (amount.toDoubleOrNull() ?: 0.0) > 0.0 && desc.isNotBlank() && (source != "bank" || selectedBank != null)
             ) { Text(strings.save) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(strings.cancel) } }

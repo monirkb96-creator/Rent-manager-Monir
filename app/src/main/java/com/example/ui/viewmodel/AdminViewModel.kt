@@ -258,6 +258,18 @@ class AdminViewModel(
             repository.recordBankTransaction(account, amount, type, desc, ref)
         }
 
+    fun recordBankTxWithFlat(
+        account: BankAccount,
+        amount: Double,
+        type: String,
+        desc: String,
+        ref: String,
+        buildingId: String,
+        flatId: String
+    ) = runAction("Bank transaction recorded") {
+        repository.recordBankTransaction(account, amount, type, desc, ref, buildingId, flatId)
+    }
+
     fun recordCashTx(amount: Double, type: String, desc: String, ref: String) =
         runAction("Cash transaction recorded") {
             repository.recordCashTransaction(amount, type, desc, ref)

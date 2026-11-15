@@ -469,6 +469,9 @@ fun AdminNavHost(
     onRecordDirectPayment: (MonthlyBill, Double, String, String, BankAccount?, String) -> Unit,
     onAddBankAccount: (BankAccount) -> Unit,
     onRecordBankTx: (BankAccount, Double, String, String, String) -> Unit,
+    onRecordBankTxWithFlat: (BankAccount, Double, String, String, String, String, String) -> Unit = { acc, amt, type, desc, ref, _, _ ->
+        onRecordBankTx(acc, amt, type, desc, ref)
+    },
     onRecordCashTx: (Double, String, String, String) -> Unit,
     onAddExpense: (Expense, BankAccount?) -> Unit,
     onDeletePayment: (PaymentRecord) -> Unit = {},
@@ -533,6 +536,7 @@ fun AdminNavHost(
                 onRecordDirectPayment = onRecordDirectPayment,
                 onAddBankAccount = onAddBankAccount,
                 onRecordBankTx = onRecordBankTx,
+                onRecordBankTxWithFlat = onRecordBankTxWithFlat,
                 onRecordCashTx = onRecordCashTx,
                 onAddExpense = onAddExpense,
                 onDeletePayment = onDeletePayment,

@@ -284,6 +284,7 @@ private fun AdminShell(
                     onRecordDirectPayment = viewModel::recordDirectPayment,
                     onAddBankAccount = viewModel::addBankAccount,
                     onRecordBankTx = viewModel::recordBankTx,
+                    onRecordBankTxWithFlat = viewModel::recordBankTxWithFlat,
                     onRecordCashTx = viewModel::recordCashTx,
                     onAddExpense = viewModel::addExpense,
                     onDeletePayment = viewModel::deletePayment,
