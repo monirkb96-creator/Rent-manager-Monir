@@ -483,6 +483,8 @@ fun AdminNavHost(
     onSaveSettings: (AppSettings) -> Unit,
     onBuildBackupJson: () -> String,
     onSignOut: () -> Unit,
+    onMarkNotificationRead: (String) -> Unit = {},
+    onMarkAllNotificationsRead: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     NavHost(
@@ -504,7 +506,9 @@ fun AdminNavHost(
                 },
                 onNavigateToTransactions = {
                     navController.navigateSingleTopTab(AdminDestination.Transactions.route)
-                }
+                },
+                onMarkNotificationRead = onMarkNotificationRead,
+                onMarkAllNotificationsRead = onMarkAllNotificationsRead
             )
         }
         composable(route = AdminDestination.Buildings.route) {
@@ -568,9 +572,13 @@ fun TenantNavHost(
     gatewayResult: GatewayInitiationResult?,
     onDismissGatewayResult: () -> Unit,
     onSubmitPayment: (MonthlyBill, Double, String, String, String) -> Unit,
+    onSubmitPaymentWithReceipt: (MonthlyBill, Double, String, String, String, String, String, String) -> Unit = { bill, amt, method, ref, notes, _, _, _ ->
+        onSubmitPayment(bill, amt, method, ref, notes)
+    },
     onMarkMessageRead: (String) -> Unit,
     onReplyToOwner: (String, String) -> Unit,
     onLanguageChange: (AppLanguage) -> Unit,
+    onSwitchToOwner: (() -> Unit)? = null,
     onSignOut: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -587,20 +595,20 @@ fun TenantNavHost(
                 state = state,
                 gatewayResult = gatewayResult,
                 onDismissGatewayResult = onDismissGatewayResult,
-                onSubmitPayment = onSubmitPayment,
+                onSubmitPayment = onSubmitPaymentWithReceipt,
                 onLanguageChange = onLanguageChange
             )
         }
         composable(route = TenantDestination.MyBills.route) {
             TenantBillsScreen(
                 state = state,
-                onSubmitPayment = onSubmitPayment
+                onSubmitPayment = onSubmitPaymentWithReceipt
             )
         }
         composable(route = TenantDestination.Payments.route) {
             TenantPaymentsScreen(
                 state = state,
-                onSubmitPayment = onSubmitPayment
+                onSubmitPayment = onSubmitPaymentWithReceipt
             )
         }
         composable(route = TenantDestination.Messages.route) {
@@ -615,6 +623,7 @@ fun TenantNavHost(
                 profile = profile,
                 state = state,
                 onLanguageChange = onLanguageChange,
+                onSwitchToOwner = onSwitchToOwner,
                 onSignOut = onSignOut
             )
         }

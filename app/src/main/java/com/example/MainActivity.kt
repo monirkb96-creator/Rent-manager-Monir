@@ -1,9 +1,13 @@
 package com.example
 
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
@@ -18,9 +22,11 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -35,6 +41,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.data.model.NotificationItem
 import com.example.data.model.UserProfile
 import com.example.data.repository.AuthRepository
 import com.example.data.repository.RentRepository
@@ -61,6 +68,7 @@ import com.example.ui.theme.SmartRentTheme
 import com.example.ui.viewmodel.AdminViewModel
 import com.example.ui.viewmodel.AuthViewModel
 import com.example.ui.viewmodel.TenantViewModel
+import com.example.util.NotificationAlertHelper
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
@@ -98,6 +106,7 @@ fun SmartRentRootApp() {
     )
 
     var firebaseUser by remember { mutableStateOf(Firebase.auth.currentUser) }
+    var selectedLoginRole by rememberSaveable { mutableStateOf("tenant") }
 
     DisposableEffect(Unit) {
         val listener = FirebaseAuth.AuthStateListener { auth ->
@@ -149,8 +158,16 @@ fun SmartRentRootApp() {
                     SignInScreen(
                         authRepository = authRepository,
                         credentialManager = credentialManager,
+                        selectedRole = selectedLoginRole,
+                        onRoleSelected = { role ->
+                            selectedLoginRole = role
+                            authViewModel.setPreferredRole(role)
+                        },
                         onLanguageChange = onLangChange,
-                        onAuthSuccess = { firebaseUser = Firebase.auth.currentUser }
+                        onAuthSuccess = {
+                            authViewModel.setPreferredRole(selectedLoginRole)
+                            firebaseUser = Firebase.auth.currentUser
+                        }
                     )
                 }
                 is SessionResolution.NeedsWorkspaceSetup -> {
@@ -171,8 +188,16 @@ fun SmartRentRootApp() {
                     SignInScreen(
                         authRepository = authRepository,
                         credentialManager = credentialManager,
+                        selectedRole = selectedLoginRole,
+                        onRoleSelected = { role ->
+                            selectedLoginRole = role
+                            authViewModel.setPreferredRole(role)
+                        },
                         onLanguageChange = onLangChange,
-                        onAuthSuccess = { firebaseUser = Firebase.auth.currentUser }
+                        onAuthSuccess = {
+                            authViewModel.setPreferredRole(selectedLoginRole)
+                            firebaseUser = Firebase.auth.currentUser
+                        }
                     )
                 }
                 is SessionResolution.Authenticated -> {
@@ -189,6 +214,9 @@ fun SmartRentRootApp() {
                                 currentUserId = session.user.uid,
                                 profile = session.profile,
                                 onLanguageChange = onLangChange,
+                                onSwitchToOwner = {
+                                    authViewModel.upgradeCurrentTenantToOwner(session.user)
+                                },
                                 onSignOut = onSignOut
                             )
                         }
@@ -219,6 +247,12 @@ private fun AdminShell(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    NotificationPermissionRequester()
+    NotificationWatcherEffect(
+        isLoading = state.isLoading,
+        notifications = state.notifications
+    )
 
     LaunchedEffect(actionMessage) {
         actionMessage?.let {
@@ -296,6 +330,8 @@ private fun AdminShell(
                     onSaveSettings = viewModel::updateSettings,
                     onBuildBackupJson = viewModel::buildBackupJson,
                     onSignOut = onSignOut,
+                    onMarkNotificationRead = viewModel::markNotificationRead,
+                    onMarkAllNotificationsRead = viewModel::markAllNotificationsRead,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -308,6 +344,7 @@ private fun TenantShell(
     currentUserId: String,
     profile: UserProfile,
     onLanguageChange: (AppLanguage) -> Unit,
+    onSwitchToOwner: () -> Unit,
     onSignOut: () -> Unit
 ) {
     val viewModel: TenantViewModel = viewModel(
@@ -325,6 +362,12 @@ private fun TenantShell(
     val gatewayResult by viewModel.gatewayResult.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    NotificationPermissionRequester()
+    NotificationWatcherEffect(
+        isLoading = state.isLoading,
+        notifications = state.notifications
+    )
+
     LaunchedEffect(actionMessage) {
         actionMessage?.let {
             snackbarHostState.showSnackbar(it)
@@ -335,7 +378,7 @@ private fun TenantShell(
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: TenantDestination.Home.route
-    val unpaidBillsCount = state.bills.count { it.remainingDue > 0.0 }
+    val unpaidBillsCount = state.displayBills.count { it.remainingDue > 0.0 }
     val unreadMessagesCount = state.messages.count { !it.isRead }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -377,14 +420,65 @@ private fun TenantShell(
                     state = state,
                     gatewayResult = gatewayResult,
                     onDismissGatewayResult = viewModel::clearGatewayResult,
-                    onSubmitPayment = viewModel::submitPayment,
+                    onSubmitPayment = { bill, amt, method, ref, notes ->
+                        viewModel.submitPayment(bill, amt, method, ref, notes)
+                    },
+                    onSubmitPaymentWithReceipt = viewModel::submitPayment,
                     onMarkMessageRead = viewModel::markMessageRead,
                     onReplyToOwner = viewModel::replyToOwner,
                     onLanguageChange = onLanguageChange,
+                    onSwitchToOwner = onSwitchToOwner,
                     onSignOut = onSignOut,
                     modifier = Modifier.weight(1f)
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun NotificationPermissionRequester() {
+    val context = LocalContext.current
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    LaunchedEffect(Unit) {
+        NotificationAlertHelper.ensureChannel(context)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !NotificationAlertHelper.hasNotificationPermission(context)
+        ) {
+            launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+}
+
+@Composable
+private fun NotificationWatcherEffect(
+    isLoading: Boolean,
+    notifications: List<NotificationItem>
+) {
+    val context = LocalContext.current
+    val seenIds = remember { mutableStateListOf<String>() }
+    var initialized by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isLoading, notifications) {
+        if (isLoading) return@LaunchedEffect
+        if (!initialized) {
+            seenIds.clear()
+            seenIds.addAll(notifications.map { it.id })
+            initialized = true
+            return@LaunchedEffect
+        }
+        val newlyArrived = notifications.filter { !it.isRead && it.id !in seenIds }
+        newlyArrived.forEach { n ->
+            seenIds.add(n.id)
+            NotificationAlertHelper.showPaymentNotification(
+                context = context,
+                notificationIdKey = n.id,
+                title = n.title,
+                body = n.body
+            )
         }
     }
 }

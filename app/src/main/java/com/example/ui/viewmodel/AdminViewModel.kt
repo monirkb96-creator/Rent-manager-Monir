@@ -7,6 +7,7 @@ import com.example.data.model.Announcement
 import com.example.data.model.AppSettings
 import com.example.data.model.AuditLog
 import com.example.data.model.BankAccount
+import com.example.data.model.BankInfoJson
 import com.example.data.model.BankTransaction
 import com.example.data.model.Building
 import com.example.data.model.CashTransaction
@@ -29,6 +30,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -123,7 +126,7 @@ class AdminViewModel(
         safeFlow(repository.observeAnnouncements(), emptyList(), "announcements"),
         safeFlow(repository.observeNotifications(currentUserId), emptyList(), "notifications"),
         safeFlow(repository.observeAuditLogs(), emptyList(), "audit_logs"),
-        safeFlow(repository.observeAppSettings(), null, "settings")
+        safeFlow(repository.observeOwnerScopedSettings(currentUserId), null, "settings")
     ) { msg, ann, notif, logs, cfg ->
         Quint(msg, ann, notif, logs, cfg ?: AppSettings())
     }
@@ -156,6 +159,22 @@ class AdminViewModel(
         started = SharingStarted.WhileSubscribed(5000L),
         initialValue = AdminDataSnapshot(isLoading = true)
     )
+
+    init {
+        viewModelScope.launch {
+            uiState
+                .map { Triple(it.isLoading, it.bankAccounts, it.settings.bankAccountsJson) }
+                .distinctUntilChanged()
+                .collect { (loading, accounts, currentJson) ->
+                    if (!loading && accounts.isNotEmpty()) {
+                        val expected = BankInfoJson.encodeFromBankAccounts(accounts)
+                        if (expected != currentJson) {
+                            repository.syncPublicBankAccountsToSettings(accounts)
+                        }
+                    }
+                }
+        }
+    }
 
     fun clearMessage() {
         _actionMessage.value = null
@@ -229,8 +248,17 @@ class AdminViewModel(
 
     fun verifyPayment(payment: PaymentRecord, targetBank: BankAccount?) {
         val bill = uiState.value.bills.firstOrNull { it.id == payment.billId } ?: return
-        runAction("Payment verified & receipt generated") {
-            repository.verifyPendingPayment(payment, bill, targetBank)
+        val resolvedBank = if (payment.method == "cash") {
+            null
+        } else {
+            targetBank
+                ?: payment.targetBankAccountId.takeIf { it.isNotBlank() }?.let { targetId ->
+                    uiState.value.bankAccounts.firstOrNull { it.id == targetId }
+                }
+                ?: uiState.value.bankAccounts.firstOrNull()
+        }
+        runAction("বিল গ্রহণ করা হয়েছে ও রসিদ তৈরি হয়েছে") {
+            repository.verifyPendingPayment(payment, bill, resolvedBank)
         }
     }
 
@@ -338,6 +366,20 @@ class AdminViewModel(
         runAction("Announcement broadcast sent") {
             repository.sendAnnouncement(title, body, category, building, uiState.value.tenants)
         }
+
+    fun markNotificationRead(notificationId: String) {
+        viewModelScope.launch {
+            repository.markNotificationRead(notificationId)
+        }
+    }
+
+    fun markAllNotificationsRead() {
+        val unreadIds = uiState.value.notifications.filter { !it.isRead }.map { it.id }
+        if (unreadIds.isEmpty()) return
+        viewModelScope.launch {
+            repository.markAllNotificationsRead(unreadIds)
+        }
+    }
 
     fun updateSettings(settings: AppSettings) =
         runAction("Settings updated") {

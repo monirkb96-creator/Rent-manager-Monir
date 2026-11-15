@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,6 +43,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -59,6 +61,7 @@ import com.example.ui.theme.StatusUnpaidText
 import com.example.ui.theme.StatusVacantBg
 import com.example.ui.theme.StatusVacantText
 import com.example.util.FormatUtils
+import com.example.util.ReceiptImageUtils
 
 @Composable
 fun StatSummaryCard(
@@ -395,4 +398,53 @@ private fun ReceiptRow(label: String, value: String) {
         Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
     }
+}
+
+@Composable
+fun ReceiptSlipPreviewDialog(
+    base64Image: String,
+    title: String,
+    subtitle: String = "",
+    onDismiss: () -> Unit
+) {
+    val strings = LocalStrings.current
+    val language = LocalLanguage.current
+    val bitmap = androidx.compose.runtime.remember(base64Image) {
+        ReceiptImageUtils.decodeBase64ToImageBitmap(base64Image)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(title, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (subtitle.isNotBlank()) {
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = title,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(340.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    )
+                } else {
+                    Text(
+                        text = if (language == AppLanguage.BN) "ছবিটি প্রদর্শন করা যাচ্ছে না।" else "Unable to render slip image.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.close)
+            }
+        }
+    )
 }

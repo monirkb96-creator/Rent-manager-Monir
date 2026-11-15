@@ -41,6 +41,10 @@ service cloud.firestore {
       );
     }
 
+    function isDocOwner(data) {
+      return isAdmin() && data.ownerId == request.auth.uid;
+    }
+
     function isVerifiedEmail(email) {
       return isSignedIn() &&
         request.auth.token.email_verified == true &&
@@ -191,6 +195,9 @@ service cloud.firestore {
         data.method in ['bkash', 'nagad', 'rocket', 'bank_transfer', 'card', 'sslcommerz', 'cash'] &&
         data.transactionId is string && data.transactionId.size() >= 3 && data.transactionId.size() <= 128 &&
         isOptString(data, 'referenceNumber', 128) &&
+        isOptString(data, 'targetBankAccountId', 128) &&
+        isOptString(data, 'targetBankAccountName', 150) &&
+        isOptString(data, 'receiptImageBase64', 350000) &&
         data.gatewayStatus in ['pending', 'verified', 'failed', 'cancelled'] &&
         data.verificationStatus in ['pending', 'verified', 'rejected'] &&
         data.paymentDate is string && data.paymentDate.size() <= 30 &&
@@ -355,6 +362,7 @@ service cloud.firestore {
         isOptString(data, 'nagadNumber', 40) &&
         isOptString(data, 'rocketNumber', 40) &&
         isOptString(data, 'bankTransferInstructions', 1000) &&
+        isOptString(data, 'bankAccountsJson', 8000) &&
         data.autoBillDay is int && data.autoBillDay >= 1 && data.autoBillDay <= 28 &&
         data.carryForwardEnabled is bool &&
         isValidTimestamp(data.createdAt) &&
@@ -364,8 +372,8 @@ service cloud.firestore {
     // --- Collection Rules ---
 
     match /admins/{userId} {
-      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
-      allow list: if isAdmin();
+      allow get: if isValidId(userId) && (isOwner(userId) || isBootstrappedAdmin());
+      allow list: if isBootstrappedAdmin();
       allow create: if isSignedIn() &&
         isValidId(userId) &&
         request.auth.uid == userId &&
@@ -376,7 +384,13 @@ service cloud.firestore {
         (isBootstrappedAdmin() ||
          (!exists(/databases/$(database)/documents/settings/app_config) &&
           existsAfter(/databases/$(database)/documents/settings/app_config) &&
-          getAfter(/databases/$(database)/documents/settings/app_config).data.ownerUid == request.auth.uid));
+          getAfter(/databases/$(database)/documents/settings/app_config).data.ownerUid == request.auth.uid) ||
+         ((!exists(/databases/$(database)/documents/users/$(userId)) ||
+           (get(/databases/$(database)/documents/users/$(userId)).data.flatId == '' &&
+            get(/databases/$(database)/documents/users/$(userId)).data.tenantId == '')) &&
+          !exists(/databases/$(database)/documents/settings/$("owner_" + userId)) &&
+          existsAfter(/databases/$(database)/documents/settings/$("owner_" + userId)) &&
+          getAfter(/databases/$(database)/documents/settings/$("owner_" + userId)).data.ownerUid == request.auth.uid));
       allow update, delete: if isBootstrappedAdmin() && isValidId(userId);
     }
 
@@ -395,7 +409,10 @@ service cloud.firestore {
             isBootstrappedAdmin() ||
             (!exists(/databases/$(database)/documents/settings/app_config) &&
              existsAfter(/databases/$(database)/documents/settings/app_config) &&
-             getAfter(/databases/$(database)/documents/settings/app_config).data.ownerUid == request.auth.uid)))
+             getAfter(/databases/$(database)/documents/settings/app_config).data.ownerUid == request.auth.uid) ||
+            (existsAfter(/databases/$(database)/documents/admins/$(userId)) &&
+             existsAfter(/databases/$(database)/documents/settings/$("owner_" + userId)) &&
+             getAfter(/databases/$(database)/documents/settings/$("owner_" + userId)).data.ownerUid == request.auth.uid)))
           || isAdmin()
         );
       allow update: if isSignedIn() &&
@@ -408,61 +425,74 @@ service cloud.firestore {
           (isOwner(userId) &&
            incoming().role == existing().role &&
            incoming().status == existing().status &&
-           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone', 'preferredLanguage', 'tenantId', 'buildingId', 'flatId', 'updatedAt']))
+           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone', 'preferredLanguage', 'tenantId', 'buildingId', 'flatId', 'updatedAt'])) ||
+          (isOwner(userId) &&
+           existing().role == 'tenant' &&
+           existing().flatId == '' &&
+           existing().tenantId == '' &&
+           incoming().role == 'admin' &&
+           incoming().status == 'active' &&
+           existsAfter(/databases/$(database)/documents/admins/$(userId)) &&
+           existsAfter(/databases/$(database)/documents/settings/$("owner_" + userId)) &&
+           getAfter(/databases/$(database)/documents/settings/$("owner_" + userId)).data.ownerUid == request.auth.uid)
         );
       allow delete: if isAdmin() && isValidId(userId);
     }
 
     match /buildings/{buildingId} {
       allow get: if isValidId(buildingId) && (
-        isAdmin() ||
+        isDocOwner(existing()) ||
         (isSignedIn() &&
          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.buildingId == buildingId)
       );
-      allow list: if isAdmin();
+      allow list: if isDocOwner(existing());
       allow create: if isAdmin() &&
+        incoming().ownerId == request.auth.uid &&
         isValidId(buildingId) &&
         isValidBuilding(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'name', 'address', 'floorsCount', 'totalFlats', 'createdAt', 'updatedAt']) &&
         incoming().keys().hasOnly(['ownerId', 'name', 'address', 'floorsCount', 'totalFlats', 'contactInfo', 'notes', 'createdAt', 'updatedAt']);
-      allow update: if isAdmin() &&
+      allow update: if isDocOwner(existing()) &&
         isValidId(buildingId) &&
         isValidBuilding(incoming()) &&
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt &&
         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'address', 'floorsCount', 'totalFlats', 'contactInfo', 'notes', 'updatedAt']);
-      allow delete: if isAdmin() && isValidId(buildingId);
+      allow delete: if isDocOwner(existing()) && isValidId(buildingId);
     }
 
     match /flats/{flatId} {
-      allow get: if isValidId(flatId) && (isAdmin() || isTenantResource(existing()));
-      allow list: if isAdmin() || isTenantResource(existing());
+      allow get: if isValidId(flatId) && (isDocOwner(existing()) || isTenantResource(existing()));
+      allow list: if isDocOwner(existing()) || isTenantResource(existing());
       allow create: if isAdmin() &&
+        incoming().ownerId == request.auth.uid &&
         isValidId(flatId) &&
         isValidFlat(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'buildingId', 'buildingName', 'flatNumber', 'floorNumber', 'monthlyRent', 'serviceCharge', 'totalMonthlyBill', 'amountPaid', 'remainingDue', 'paymentStatus', 'isOccupied', 'createdAt', 'updatedAt']) &&
         incoming().keys().hasOnly(['ownerId', 'buildingId', 'buildingName', 'flatNumber', 'floorNumber', 'monthlyRent', 'serviceCharge', 'electricityBill', 'waterBill', 'gasBill', 'otherCharges', 'totalMonthlyBill', 'amountPaid', 'remainingDue', 'paymentStatus', 'tenantId', 'tenantUserId', 'tenantEmail', 'tenantName', 'tenantPhone', 'isOccupied', 'createdAt', 'updatedAt']) &&
-        exists(/databases/$(database)/documents/buildings/$(incoming().buildingId));
+        exists(/databases/$(database)/documents/buildings/$(incoming().buildingId)) &&
+        get(/databases/$(database)/documents/buildings/$(incoming().buildingId)).data.ownerId == request.auth.uid;
       allow update: if isSignedIn() &&
         isValidId(flatId) &&
         isValidFlat(incoming()) &&
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt &&
         (
-          isAdmin() ||
+          isDocOwner(existing()) ||
           (isVerifiedEmail(existing().tenantEmail) &&
            existing().tenantUserId == '' &&
            incoming().tenantUserId == request.auth.uid &&
            incoming().diff(existing()).affectedKeys().hasOnly(['tenantUserId', 'updatedAt']))
         );
-      allow delete: if isAdmin() && isValidId(flatId);
+      allow delete: if isDocOwner(existing()) && isValidId(flatId);
     }
 
     match /tenants/{tenantId} {
-      allow get: if isValidId(tenantId) && (isAdmin() || isTenantResource(existing()) || isVerifiedEmail(existing().email));
-      allow list: if isAdmin() || isTenantResource(existing()) || isVerifiedEmail(existing().email);
+      allow get: if isValidId(tenantId) && (isDocOwner(existing()) || isTenantResource(existing()) || isVerifiedEmail(existing().email));
+      allow list: if isDocOwner(existing()) || isTenantResource(existing()) || isVerifiedEmail(existing().email);
       allow create: if isAdmin() &&
+        incoming().ownerId == request.auth.uid &&
         isValidId(tenantId) &&
         isValidTenant(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'name', 'email', 'phone', 'buildingId', 'flatId', 'status', 'moveInDate', 'createdAt', 'updatedAt']) &&
@@ -473,50 +503,63 @@ service cloud.firestore {
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt &&
         (
-          isAdmin() ||
+          isDocOwner(existing()) ||
           (isVerifiedEmail(existing().email) &&
            existing().tenantUserId == '' &&
            incoming().tenantUserId == request.auth.uid &&
            incoming().diff(existing()).affectedKeys().hasOnly(['tenantUserId', 'updatedAt']))
         );
-      allow delete: if isAdmin() && isValidId(tenantId);
+      allow delete: if isDocOwner(existing()) && isValidId(tenantId);
     }
 
     match /monthly_bills/{billId} {
-      allow get: if isValidId(billId) && (isAdmin() || isTenantResource(existing()));
-      allow list: if isAdmin() || isTenantResource(existing());
-      allow create: if isAdmin() &&
+      allow get: if isValidId(billId) && (isDocOwner(existing()) || isTenantResource(existing()));
+      allow list: if isDocOwner(existing()) || isTenantResource(existing());
+      allow create: if isSignedIn() &&
         isValidId(billId) &&
         isValidMonthlyBill(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'buildingId', 'flatId', 'tenantId', 'billingMonth', 'monthKey', 'monthlyRent', 'serviceCharge', 'totalBill', 'amountPaid', 'remainingDue', 'status', 'createdAt', 'updatedAt']) &&
-        incoming().keys().hasOnly(['ownerId', 'buildingId', 'buildingName', 'flatId', 'flatNumber', 'tenantId', 'tenantUserId', 'tenantEmail', 'tenantName', 'billingMonth', 'monthKey', 'monthlyRent', 'serviceCharge', 'electricityBill', 'waterBill', 'gasBill', 'otherCharges', 'previousDueCarriedForward', 'totalBill', 'amountPaid', 'remainingDue', 'status', 'dueDate', 'createdAt', 'updatedAt']);
+        incoming().keys().hasOnly(['ownerId', 'buildingId', 'buildingName', 'flatId', 'flatNumber', 'tenantId', 'tenantUserId', 'tenantEmail', 'tenantName', 'billingMonth', 'monthKey', 'monthlyRent', 'serviceCharge', 'electricityBill', 'waterBill', 'gasBill', 'otherCharges', 'previousDueCarriedForward', 'totalBill', 'amountPaid', 'remainingDue', 'status', 'dueDate', 'createdAt', 'updatedAt']) &&
+        (
+          (isAdmin() && incoming().ownerId == request.auth.uid) ||
+          (billId == incoming().flatId + '_' + incoming().monthKey &&
+           exists(/databases/$(database)/documents/flats/$(incoming().flatId)) &&
+           isTenantResource(get(/databases/$(database)/documents/flats/$(incoming().flatId)).data) &&
+           incoming().ownerId == get(/databases/$(database)/documents/flats/$(incoming().flatId)).data.ownerId &&
+           incoming().buildingId == get(/databases/$(database)/documents/flats/$(incoming().flatId)).data.buildingId &&
+           incoming().totalBill == get(/databases/$(database)/documents/flats/$(incoming().flatId)).data.totalMonthlyBill &&
+           incoming().amountPaid == 0 &&
+           incoming().remainingDue == get(/databases/$(database)/documents/flats/$(incoming().flatId)).data.totalMonthlyBill &&
+           incoming().status == 'unpaid')
+        );
       allow update: if isSignedIn() &&
         isValidId(billId) &&
         isValidMonthlyBill(incoming()) &&
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt &&
         (
-          isAdmin() ||
+          isDocOwner(existing()) ||
           (isVerifiedEmail(existing().tenantEmail) &&
            existing().tenantUserId == '' &&
            incoming().tenantUserId == request.auth.uid &&
            incoming().diff(existing()).affectedKeys().hasOnly(['tenantUserId', 'updatedAt']))
         );
-      allow delete: if isAdmin() && isValidId(billId);
+      allow delete: if isDocOwner(existing()) && isValidId(billId);
     }
 
     match /payments/{paymentId} {
-      allow get: if isValidId(paymentId) && (isAdmin() || isTenantResource(existing()));
-      allow list: if isAdmin() || isTenantResource(existing());
+      allow get: if isValidId(paymentId) && (isDocOwner(existing()) || isTenantResource(existing()));
+      allow list: if isDocOwner(existing()) || isTenantResource(existing());
       allow create: if isSignedIn() &&
         isValidId(paymentId) &&
         isValidPayment(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'billId', 'buildingId', 'flatId', 'tenantId', 'amount', 'method', 'transactionId', 'gatewayStatus', 'verificationStatus', 'paymentDate', 'createdAt', 'updatedAt']) &&
-        incoming().keys().hasOnly(['ownerId', 'billId', 'buildingId', 'buildingName', 'flatId', 'flatNumber', 'tenantId', 'tenantUserId', 'tenantEmail', 'tenantName', 'amount', 'method', 'transactionId', 'referenceNumber', 'gatewayStatus', 'verificationStatus', 'paymentDate', 'notes', 'verifiedBy', 'receiptId', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasOnly(['ownerId', 'billId', 'buildingId', 'buildingName', 'flatId', 'flatNumber', 'tenantId', 'tenantUserId', 'tenantEmail', 'tenantName', 'amount', 'method', 'transactionId', 'referenceNumber', 'targetBankAccountId', 'targetBankAccountName', 'receiptImageBase64', 'gatewayStatus', 'verificationStatus', 'paymentDate', 'notes', 'verifiedBy', 'receiptId', 'createdAt', 'updatedAt']) &&
         exists(/databases/$(database)/documents/monthly_bills/$(incoming().billId)) &&
         (
-          isAdmin() ||
+          (isAdmin() && incoming().ownerId == request.auth.uid) ||
           (incoming().tenantUserId == request.auth.uid &&
+           incoming().ownerId == get(/databases/$(database)/documents/monthly_bills/$(incoming().billId)).data.ownerId &&
            incoming().verificationStatus == 'pending' &&
            incoming().gatewayStatus == 'pending')
         );
@@ -526,71 +569,75 @@ service cloud.firestore {
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt &&
         (
-          isAdmin() ||
+          isDocOwner(existing()) ||
           (existing().verificationStatus == 'pending' &&
            existing().tenantUserId == request.auth.uid &&
            incoming().gatewayStatus == 'cancelled' &&
            incoming().verificationStatus == 'rejected' &&
            incoming().diff(existing()).affectedKeys().hasOnly(['gatewayStatus', 'verificationStatus', 'updatedAt']))
         );
-      allow delete: if isAdmin() && isValidId(paymentId);
+      allow delete: if isDocOwner(existing()) && isValidId(paymentId);
     }
 
     match /bank_accounts/{accountId} {
-      allow get: if isValidId(accountId) && isAdmin();
-      allow list: if isAdmin();
+      allow get: if isValidId(accountId) && isDocOwner(existing());
+      allow list: if isDocOwner(existing());
       allow create: if isAdmin() &&
+        incoming().ownerId == request.auth.uid &&
         isValidId(accountId) &&
         isValidBankAccount(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'accountName', 'bankName', 'accountNumber', 'accountType', 'openingBalance', 'currentBalance', 'createdAt', 'updatedAt']) &&
         incoming().keys().hasOnly(['ownerId', 'accountName', 'bankName', 'accountNumber', 'accountType', 'openingBalance', 'moneyReceived', 'moneyTransferred', 'bankExpenses', 'currentBalance', 'createdAt', 'updatedAt']);
-      allow update: if isAdmin() &&
+      allow update: if isDocOwner(existing()) &&
         isValidId(accountId) &&
         isValidBankAccount(incoming()) &&
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt;
-      allow delete: if isAdmin() && isValidId(accountId);
+      allow delete: if isDocOwner(existing()) && isValidId(accountId);
     }
 
     match /bank_transactions/{txId} {
-      allow get: if isValidId(txId) && isAdmin();
-      allow list: if isAdmin();
+      allow get: if isValidId(txId) && isDocOwner(existing());
+      allow list: if isDocOwner(existing());
       allow create: if isAdmin() &&
+        incoming().ownerId == request.auth.uid &&
         isValidId(txId) &&
         isValidBankTransaction(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'bankAccountId', 'date', 'amount', 'transactionType', 'description', 'paymentMethod', 'referenceNumber', 'createdBy', 'verificationStatus', 'createdAt']) &&
         incoming().keys().hasOnly(['ownerId', 'bankAccountId', 'bankAccountName', 'date', 'amount', 'transactionType', 'description', 'paymentMethod', 'referenceNumber', 'buildingId', 'flatId', 'createdBy', 'verificationStatus', 'createdAt']);
-      allow update, delete: if isAdmin() && isValidId(txId);
+      allow update, delete: if isDocOwner(existing()) && isValidId(txId);
     }
 
     match /cash_transactions/{txId} {
-      allow get: if isValidId(txId) && isAdmin();
-      allow list: if isAdmin();
+      allow get: if isValidId(txId) && isDocOwner(existing());
+      allow list: if isDocOwner(existing());
       allow create: if isAdmin() &&
+        incoming().ownerId == request.auth.uid &&
         isValidId(txId) &&
         isValidCashTransaction(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'date', 'amount', 'transactionType', 'description', 'paymentMethod', 'referenceNumber', 'createdBy', 'verificationStatus', 'createdAt']) &&
         incoming().keys().hasOnly(['ownerId', 'date', 'amount', 'transactionType', 'description', 'paymentMethod', 'referenceNumber', 'buildingId', 'flatId', 'createdBy', 'verificationStatus', 'createdAt']);
-      allow update, delete: if isAdmin() && isValidId(txId);
+      allow update, delete: if isDocOwner(existing()) && isValidId(txId);
     }
 
     match /expenses/{expenseId} {
-      allow get: if isValidId(expenseId) && isAdmin();
-      allow list: if isAdmin();
+      allow get: if isValidId(expenseId) && isDocOwner(existing());
+      allow list: if isDocOwner(existing());
       allow create: if isAdmin() &&
+        incoming().ownerId == request.auth.uid &&
         isValidId(expenseId) &&
         isValidExpense(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'category', 'amount', 'date', 'paymentSource', 'description', 'createdBy', 'createdAt']) &&
         incoming().keys().hasOnly(['ownerId', 'buildingId', 'buildingName', 'flatId', 'category', 'amount', 'date', 'paymentSource', 'bankAccountId', 'description', 'referenceNumber', 'createdBy', 'createdAt']);
-      allow update, delete: if isAdmin() && isValidId(expenseId);
+      allow update, delete: if isDocOwner(existing()) && isValidId(expenseId);
     }
 
     match /messages/{messageId} {
       allow get: if isValidId(messageId) && (
-        isAdmin() ||
+        isDocOwner(existing()) ||
         (isSignedIn() && (existing().recipientUid == request.auth.uid || existing().senderUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail)))
       );
-      allow list: if isAdmin() || (
+      allow list: if isDocOwner(existing()) || (
         isSignedIn() && (existing().recipientUid == request.auth.uid || existing().senderUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail))
       );
       allow create: if isSignedIn() &&
@@ -599,7 +646,7 @@ service cloud.firestore {
         incoming().keys().hasAll(['ownerId', 'senderUid', 'senderRole', 'title', 'body', 'type', 'isRead', 'createdAt', 'updatedAt']) &&
         incoming().keys().hasOnly(['ownerId', 'senderUid', 'senderName', 'senderRole', 'recipientUid', 'recipientEmail', 'tenantId', 'buildingId', 'flatId', 'flatNumber', 'title', 'body', 'type', 'isRead', 'createdAt', 'updatedAt']) &&
         (
-          isAdmin() ||
+          (isAdmin() && incoming().ownerId == request.auth.uid) ||
           (incoming().senderUid == request.auth.uid && incoming().senderRole == 'tenant')
         );
       allow update: if isSignedIn() &&
@@ -608,37 +655,38 @@ service cloud.firestore {
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt &&
         (
-          isAdmin() ||
+          isDocOwner(existing()) ||
           ((existing().recipientUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail)) &&
            incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'updatedAt']))
         );
-      allow delete: if isAdmin() && isValidId(messageId);
+      allow delete: if isDocOwner(existing()) && isValidId(messageId);
     }
 
     match /announcements/{announcementId} {
       allow get: if isValidId(announcementId) && (
-        isAdmin() || (isSignedIn() && existing().targetScope == 'all')
+        isDocOwner(existing()) || (isSignedIn() && existing().targetScope == 'all')
       );
-      allow list: if isAdmin() || (isSignedIn() && existing().targetScope == 'all');
+      allow list: if isDocOwner(existing()) || (isSignedIn() && existing().targetScope == 'all');
       allow create: if isAdmin() &&
+        incoming().ownerId == request.auth.uid &&
         isValidId(announcementId) &&
         isValidAnnouncement(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'targetScope', 'title', 'body', 'category', 'createdBy', 'createdAt', 'updatedAt']) &&
         incoming().keys().hasOnly(['ownerId', 'targetScope', 'buildingId', 'buildingName', 'title', 'body', 'category', 'createdBy', 'createdAt', 'updatedAt']);
-      allow update: if isAdmin() &&
+      allow update: if isDocOwner(existing()) &&
         isValidId(announcementId) &&
         isValidAnnouncement(incoming()) &&
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt;
-      allow delete: if isAdmin() && isValidId(announcementId);
+      allow delete: if isDocOwner(existing()) && isValidId(announcementId);
     }
 
     match /notifications/{notificationId} {
       allow get: if isValidId(notificationId) && (
-        isAdmin() ||
+        isDocOwner(existing()) ||
         (isSignedIn() && (existing().recipientUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail)))
       );
-      allow list: if isAdmin() || (
+      allow list: if isDocOwner(existing()) || (
         isSignedIn() && (existing().recipientUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail))
       );
       allow create: if isSignedIn() &&
@@ -646,39 +694,40 @@ service cloud.firestore {
         isValidNotificationItem(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'title', 'body', 'type', 'isRead', 'createdAt', 'updatedAt']) &&
         incoming().keys().hasOnly(['ownerId', 'recipientUid', 'recipientEmail', 'title', 'body', 'type', 'relatedId', 'isRead', 'createdAt', 'updatedAt']) &&
-        (isAdmin() || incoming().type == 'payment_submitted');
+        ((isAdmin() && incoming().ownerId == request.auth.uid) || incoming().type == 'payment_submitted');
       allow update: if isSignedIn() &&
         isValidId(notificationId) &&
         isValidNotificationItem(incoming()) &&
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt &&
         (
-          isAdmin() ||
+          isDocOwner(existing()) ||
           ((existing().recipientUid == request.auth.uid || isVerifiedEmail(existing().recipientEmail)) &&
            incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'updatedAt']))
         );
-      allow delete: if isAdmin() && isValidId(notificationId);
+      allow delete: if isDocOwner(existing()) && isValidId(notificationId);
     }
 
     match /receipts/{receiptId} {
-      allow get: if isValidId(receiptId) && (isAdmin() || isTenantResource(existing()));
-      allow list: if isAdmin() || isTenantResource(existing());
+      allow get: if isValidId(receiptId) && (isDocOwner(existing()) || isTenantResource(existing()));
+      allow list: if isDocOwner(existing()) || isTenantResource(existing());
       allow create: if isAdmin() &&
+        incoming().ownerId == request.auth.uid &&
         isValidId(receiptId) &&
         isValidReceipt(incoming()) &&
         incoming().keys().hasAll(['ownerId', 'paymentId', 'billId', 'receiptNumber', 'buildingName', 'flatNumber', 'tenantName', 'paymentDate', 'amountPaid', 'paymentMethod', 'transactionId', 'previousDue', 'remainingDue', 'status', 'createdAt', 'updatedAt']) &&
         incoming().keys().hasOnly(['ownerId', 'paymentId', 'billId', 'receiptNumber', 'buildingId', 'buildingName', 'flatId', 'flatNumber', 'tenantId', 'tenantUserId', 'tenantEmail', 'tenantName', 'paymentDate', 'amountPaid', 'paymentMethod', 'transactionId', 'previousDue', 'remainingDue', 'status', 'createdAt', 'updatedAt']);
-      allow update: if isAdmin() &&
+      allow update: if isDocOwner(existing()) &&
         isValidId(receiptId) &&
         isValidReceipt(incoming()) &&
         incoming().ownerId == existing().ownerId &&
         incoming().createdAt == existing().createdAt;
-      allow delete: if isAdmin() && isValidId(receiptId);
+      allow delete: if isDocOwner(existing()) && isValidId(receiptId);
     }
 
     match /audit_logs/{logId} {
-      allow get: if isValidId(logId) && isAdmin();
-      allow list: if isAdmin();
+      allow get: if isValidId(logId) && isDocOwner(existing());
+      allow list: if isDocOwner(existing());
       allow create: if isSignedIn() &&
         isValidId(logId) &&
         incoming().keys().hasAll(['ownerId', 'actorUid', 'actorEmail', 'actorRole', 'action', 'entityType', 'entityId', 'summary', 'createdAt']) &&
@@ -688,23 +737,27 @@ service cloud.firestore {
     }
 
     match /settings/{settingId} {
-      allow get: if isValidId(settingId) && (
-        isAdmin() || (isSignedIn() && settingId == 'app_config')
+      allow get: if isValidId(settingId) && isSignedIn() && (
+        settingId == 'app_config' ||
+        settingId.matches('^owner_.+$') ||
+        (isAdmin() && existing().ownerUid == request.auth.uid)
       );
-      allow list: if isAdmin();
+      allow list: if isAdmin() && existing().ownerUid == request.auth.uid;
       allow create: if isSignedIn() &&
         isValidId(settingId) &&
-        settingId == 'app_config' &&
+        (settingId == 'app_config' || settingId == 'owner_' + request.auth.uid) &&
         isValidAppSettings(incoming()) &&
         incoming().keys().hasAll(['ownerUid', 'appName', 'defaultLanguage', 'sslCommerzSandboxMode', 'autoBillDay', 'carryForwardEnabled', 'createdAt', 'updatedAt']) &&
-        incoming().keys().hasOnly(['ownerUid', 'appName', 'defaultLanguage', 'sslCommerzStoreId', 'sslCommerzSandboxMode', 'bkashNumber', 'nagadNumber', 'rocketNumber', 'bankTransferInstructions', 'autoBillDay', 'carryForwardEnabled', 'createdAt', 'updatedAt']) &&
-        (isAdmin() || (!exists(/databases/$(database)/documents/settings/app_config) && incoming().ownerUid == request.auth.uid));
+        incoming().keys().hasOnly(['ownerUid', 'appName', 'defaultLanguage', 'sslCommerzStoreId', 'sslCommerzSandboxMode', 'bkashNumber', 'nagadNumber', 'rocketNumber', 'bankTransferInstructions', 'bankAccountsJson', 'autoBillDay', 'carryForwardEnabled', 'createdAt', 'updatedAt']) &&
+        incoming().ownerUid == request.auth.uid &&
+        (settingId == 'owner_' + request.auth.uid || isAdmin() || !exists(/databases/$(database)/documents/settings/app_config));
       allow update: if isAdmin() &&
         isValidId(settingId) &&
         isValidAppSettings(incoming()) &&
+        existing().ownerUid == request.auth.uid &&
         incoming().ownerUid == existing().ownerUid &&
         incoming().createdAt == existing().createdAt;
-      allow delete: if isAdmin() && isValidId(settingId);
+      allow delete: if isAdmin() && isValidId(settingId) && existing().ownerUid == request.auth.uid;
     }
   }
 }

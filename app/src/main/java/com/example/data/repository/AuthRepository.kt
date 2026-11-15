@@ -179,7 +179,10 @@ class AuthRepository(
         return email.equals("MonirKb96@gmail.com", ignoreCase = true)
     }
 
-    suspend fun resolveUserSession(user: FirebaseUser): SessionResolution {
+    suspend fun resolveUserSession(
+        user: FirebaseUser,
+        preferredRole: String? = null
+    ): SessionResolution {
         val uid = user.uid
         val email = user.email.orEmpty()
         val displayName = user.displayName?.ifBlank { null } ?: email.substringBefore("@").ifBlank { "User" }
@@ -202,28 +205,14 @@ class AuthRepository(
                 false
             }
 
-            // 3. Check if workspace app_config exists
-            val configSnapshot = try {
-                db.collection("settings").document("app_config").get().await()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                handleFirestoreError(e, OperationType.GET, "settings/app_config")
-                null
-            }
-
             val isBootstrapped = isBootstrappedAdminEmail(email)
 
             if (isBootstrapped || adminExists) {
-                ensureAdminProvisioned(uid, email, displayName, configSnapshot?.exists() == true)
+                ensureAdminProvisioned(uid, email, displayName)
                 val freshUser = db.collection("users").document(uid).get().await()
                     .toObject(UserProfile::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
                     ?: UserProfile(id = uid, userId = uid, email = email, displayName = displayName, role = "admin")
                 return SessionResolution.Authenticated(user, freshUser, isAdmin = true)
-            }
-
-            if (configSnapshot != null && !configSnapshot.exists() && (userDoc == null || !userDoc.exists())) {
-                return SessionResolution.NeedsWorkspaceSetup(user)
             }
 
             if (userDoc != null && userDoc.exists()) {
@@ -233,38 +222,38 @@ class AuthRepository(
                     return SessionResolution.InactiveAccount(user, profile)
                 }
                 if (profile.role == "admin") {
+                    ensureAdminProvisioned(uid, email, displayName)
                     return SessionResolution.Authenticated(user, profile, isAdmin = true)
+                }
+                if (preferredRole == "admin" && profile.flatId.isBlank() && profile.tenantId.isBlank()) {
+                    return initializeAsOwner(user)
                 }
                 val linkedProfile = linkTenantRecordsIfNeeded(uid, email, profile)
                 return SessionResolution.Authenticated(user, linkedProfile, isAdmin = false)
             }
 
-            // Create new tenant profile & auto-link any invited flat/tenant/bill records by verified email
-            val newProfilePayload = mapOf(
-                "userId" to uid,
-                "email" to email,
-                "displayName" to displayName,
-                "phone" to "",
-                "role" to "tenant",
-                "status" to "active",
-                "tenantId" to "",
-                "buildingId" to "",
-                "flatId" to "",
-                "preferredLanguage" to "bn",
-                "createdAt" to FieldValue.serverTimestamp(),
-                "updatedAt" to FieldValue.serverTimestamp()
-            )
-            db.collection("users").document(uid).set(newProfilePayload).await()
-            val initialProfile = UserProfile(
-                id = uid,
-                userId = uid,
-                email = email,
-                displayName = displayName,
-                role = "tenant",
-                status = "active"
-            )
-            val linkedProfile = linkTenantRecordsIfNeeded(uid, email, initialProfile)
-            SessionResolution.Authenticated(user, linkedProfile, isAdmin = false)
+            if (preferredRole == "admin") {
+                return initializeAsOwner(user)
+            }
+            if (preferredRole == "tenant") {
+                return initializeAsTenant(user)
+            }
+
+            // Fallback when no preferredRole was supplied (e.g. cold startup check):
+            val configSnapshot = try {
+                db.collection("settings").document("app_config").get().await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                handleFirestoreError(e, OperationType.GET, "settings/app_config")
+                null
+            }
+
+            if (configSnapshot != null && !configSnapshot.exists()) {
+                return SessionResolution.NeedsWorkspaceSetup(user)
+            }
+
+            initializeAsTenant(user)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -278,23 +267,28 @@ class AuthRepository(
         val email = user.email.orEmpty()
         val displayName = user.displayName?.ifBlank { null } ?: email.substringBefore("@").ifBlank { "Owner" }
         return try {
-            ensureAdminProvisioned(uid, email, displayName, configAlreadyExists = false)
-            val profile = UserProfile(
-                id = uid,
-                userId = uid,
-                email = email,
-                displayName = displayName,
-                role = "admin",
-                status = "active"
-            )
+            ensureAdminProvisioned(uid, email, displayName)
+            val profile = db.collection("users").document(uid).get().await()
+                .toObject(UserProfile::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                ?: UserProfile(
+                    id = uid,
+                    userId = uid,
+                    email = email,
+                    displayName = displayName,
+                    role = "admin",
+                    status = "active"
+                )
             SessionResolution.Authenticated(user, profile, isAdmin = true)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.WRITE, "settings/app_config")
+            handleFirestoreError(e, OperationType.WRITE, "settings/owner_$uid")
             SessionResolution.Error(e.localizedMessage ?: "Failed to initialize owner account")
         }
     }
+
+    suspend fun upgradeUnassignedTenantToOwner(user: FirebaseUser): SessionResolution =
+        initializeAsOwner(user)
 
     suspend fun initializeAsTenant(user: FirebaseUser): SessionResolution {
         val uid = user.uid
@@ -337,30 +331,44 @@ class AuthRepository(
     private suspend fun ensureAdminProvisioned(
         uid: String,
         email: String,
-        displayName: String,
-        configAlreadyExists: Boolean
+        displayName: String
     ) {
         val batch = db.batch()
-        if (!configAlreadyExists) {
-            val configRef = db.collection("settings").document("app_config")
-            batch.set(
-                configRef,
-                mapOf(
-                    "ownerUid" to uid,
-                    "appName" to "Smart Rent Manager",
-                    "defaultLanguage" to "bn",
-                    "sslCommerzStoreId" to "",
-                    "sslCommerzSandboxMode" to true,
-                    "bkashNumber" to "",
-                    "nagadNumber" to "",
-                    "rocketNumber" to "",
-                    "bankTransferInstructions" to "",
-                    "autoBillDay" to 1,
-                    "carryForwardEnabled" to true,
-                    "createdAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            )
+        var hasWrites = false
+
+        val defaultSettingsPayload = mapOf(
+            "ownerUid" to uid,
+            "appName" to "Smart Rent Manager",
+            "defaultLanguage" to "bn",
+            "sslCommerzStoreId" to "",
+            "sslCommerzSandboxMode" to true,
+            "bkashNumber" to "",
+            "nagadNumber" to "",
+            "rocketNumber" to "",
+            "bankTransferInstructions" to "",
+            "bankAccountsJson" to "",
+            "autoBillDay" to 1,
+            "carryForwardEnabled" to true,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+
+        val ownerSettingsRef = db.collection("settings").document("owner_$uid")
+        val ownerSettingsSnap = ownerSettingsRef.get().await()
+        if (!ownerSettingsSnap.exists()) {
+            batch.set(ownerSettingsRef, defaultSettingsPayload)
+            hasWrites = true
+        }
+
+        val appConfigRef = db.collection("settings").document("app_config")
+        val appConfigSnap = try {
+            appConfigRef.get().await()
+        } catch (_: Exception) {
+            null
+        }
+        if (appConfigSnap != null && !appConfigSnap.exists()) {
+            batch.set(appConfigRef, defaultSettingsPayload)
+            hasWrites = true
         }
 
         val adminRef = db.collection("admins").document(uid)
@@ -370,10 +378,11 @@ class AuthRepository(
                 adminRef,
                 mapOf(
                     "userId" to uid,
-                    "email" to email,
+                    "email" to email.ifBlank { "$uid@owner.local" },
                     "createdAt" to FieldValue.serverTimestamp()
                 )
             )
+            hasWrites = true
         }
 
         val userRef = db.collection("users").document(uid)
@@ -396,8 +405,22 @@ class AuthRepository(
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             )
+            hasWrites = true
+        } else if (userSnap.getString("role") != "admin") {
+            batch.update(
+                userRef,
+                mapOf(
+                    "role" to "admin",
+                    "status" to "active",
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+            hasWrites = true
         }
-        batch.commit().await()
+
+        if (hasWrites) {
+            batch.commit().await()
+        }
     }
 
     private suspend fun linkTenantRecordsIfNeeded(

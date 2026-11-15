@@ -6,6 +6,7 @@ import com.example.data.model.Announcement
 import com.example.data.model.AppSettings
 import com.example.data.model.AuditLog
 import com.example.data.model.BankAccount
+import com.example.data.model.BankInfoJson
 import com.example.data.model.BankTransaction
 import com.example.data.model.Building
 import com.example.data.model.CashTransaction
@@ -31,6 +32,8 @@ import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import org.json.JSONArray
@@ -77,39 +80,63 @@ class RentRepository(
             }
     }
 
-    // --- ADMIN REALTIME STREAMS ---
+    // --- ADMIN REALTIME STREAMS (STRICTLY SCOPED TO CURRENT OWNER) ---
+    private fun currentUidOrEmpty(): String = auth.currentUser?.uid.orEmpty()
+
     fun observeBuildings(): Flow<List<Building>> =
-        observeCollection("buildings") { it.collection("buildings") }
+        observeCollection("buildings") {
+            it.collection("buildings").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeFlats(): Flow<List<Flat>> =
-        observeCollection("flats") { it.collection("flats") }
+        observeCollection("flats") {
+            it.collection("flats").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeTenants(): Flow<List<Tenant>> =
-        observeCollection("tenants") { it.collection("tenants") }
+        observeCollection("tenants") {
+            it.collection("tenants").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeBills(): Flow<List<MonthlyBill>> =
-        observeCollection("monthly_bills") { it.collection("monthly_bills") }
+        observeCollection("monthly_bills") {
+            it.collection("monthly_bills").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observePayments(): Flow<List<PaymentRecord>> =
-        observeCollection("payments") { it.collection("payments") }
+        observeCollection("payments") {
+            it.collection("payments").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeBankAccounts(): Flow<List<BankAccount>> =
-        observeCollection("bank_accounts") { it.collection("bank_accounts") }
+        observeCollection("bank_accounts") {
+            it.collection("bank_accounts").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeBankTransactions(): Flow<List<BankTransaction>> =
-        observeCollection("bank_transactions") { it.collection("bank_transactions") }
+        observeCollection("bank_transactions") {
+            it.collection("bank_transactions").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeCashTransactions(): Flow<List<CashTransaction>> =
-        observeCollection("cash_transactions") { it.collection("cash_transactions") }
+        observeCollection("cash_transactions") {
+            it.collection("cash_transactions").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeExpenses(): Flow<List<Expense>> =
-        observeCollection("expenses") { it.collection("expenses") }
+        observeCollection("expenses") {
+            it.collection("expenses").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeMessages(): Flow<List<MessageItem>> =
-        observeCollection("messages") { it.collection("messages") }
+        observeCollection("messages") {
+            it.collection("messages").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeAnnouncements(): Flow<List<Announcement>> =
-        observeCollection("announcements") { it.collection("announcements") }
+        observeCollection("announcements") {
+            it.collection("announcements").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeNotifications(uid: String): Flow<List<NotificationItem>> =
         observeCollection("notifications") {
@@ -117,10 +144,14 @@ class RentRepository(
         }
 
     fun observeReceipts(): Flow<List<Receipt>> =
-        observeCollection("receipts") { it.collection("receipts") }
+        observeCollection("receipts") {
+            it.collection("receipts").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeAuditLogs(): Flow<List<AuditLog>> =
-        observeCollection("audit_logs") { it.collection("audit_logs") }
+        observeCollection("audit_logs") {
+            it.collection("audit_logs").whereEqualTo("ownerId", currentUidOrEmpty())
+        }
 
     fun observeAppSettings(): Flow<AppSettings?> =
         db.collection("settings").document("app_config")
@@ -136,6 +167,34 @@ class RentRepository(
                 handleFirestoreError(firestoreError ?: error, OperationType.GET, "settings/app_config")
                 throw error
             }
+
+    private fun observeSettingsDoc(docId: String): Flow<AppSettings?> =
+        db.collection("settings").document(docId)
+            .snapshots()
+            .map { snap ->
+                if (snap.exists()) {
+                    snap.toObject(AppSettings::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                } else {
+                    null
+                }
+            }
+            .catch { error ->
+                val firestoreError = generateSequence(error) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (firestoreError == null && error is CancellationException) throw error
+                emit(null)
+            }
+
+    fun observeOwnerScopedSettings(ownerUid: String): Flow<AppSettings?> {
+        if (ownerUid.isBlank()) return flowOf(null)
+        return combine(
+            observeSettingsDoc("owner_$ownerUid"),
+            observeSettingsDoc("app_config")
+        ) { ownerDoc, legacyDoc ->
+            ownerDoc ?: legacyDoc?.takeIf { it.ownerUid == ownerUid }
+        }
+    }
 
     // --- TENANT SCOPED REALTIME STREAMS ---
     fun observeTenantFlats(uid: String): Flow<List<Flat>> =
@@ -167,6 +226,13 @@ class RentRepository(
         observeCollection("announcements") {
             it.collection("announcements").whereEqualTo("targetScope", "all")
         }
+
+    fun observeBroadcastAnnouncementsForOwner(ownerId: String): Flow<List<Announcement>> {
+        if (ownerId.isBlank()) return flowOf(emptyList())
+        return observeCollection<Announcement>("announcements") {
+            it.collection("announcements").whereEqualTo("ownerId", ownerId)
+        }.map { list -> list.filter { it.targetScope == "all" } }
+    }
 
     // --- AUDIT LOG HELPER ---
     private suspend fun writeAuditLog(
@@ -448,6 +514,48 @@ class RentRepository(
             )
         }
 
+        val currentMonthKey = FormatUtils.currentMonthKey()
+        val currentBillingMonth = FormatUtils.currentBillingMonth()
+        val currentBillId = "${targetFlat.id}_$currentMonthKey"
+        val currentBillRef = db.collection("monthly_bills").document(currentBillId)
+        val existingBillSnap = try {
+            currentBillRef.get().await()
+        } catch (_: Exception) {
+            null
+        }
+        if (tenant.status != "vacated" && totalBill > 0.0 && existingBillSnap?.exists() != true) {
+            batch.set(
+                currentBillRef,
+                mapOf(
+                    "ownerId" to uid,
+                    "buildingId" to targetFlat.buildingId,
+                    "buildingName" to targetFlat.buildingName,
+                    "flatId" to targetFlat.id,
+                    "flatNumber" to targetFlat.flatNumber,
+                    "tenantId" to tenantRef.id,
+                    "tenantUserId" to resolvedTenantUserId,
+                    "tenantEmail" to normalizedEmail,
+                    "tenantName" to tenant.name.trim(),
+                    "billingMonth" to currentBillingMonth,
+                    "monthKey" to currentMonthKey,
+                    "monthlyRent" to targetFlat.monthlyRent,
+                    "serviceCharge" to targetFlat.serviceCharge,
+                    "electricityBill" to targetFlat.electricityBill,
+                    "waterBill" to targetFlat.waterBill,
+                    "gasBill" to targetFlat.gasBill,
+                    "otherCharges" to targetFlat.otherCharges,
+                    "previousDueCarriedForward" to 0.0,
+                    "totalBill" to totalBill,
+                    "amountPaid" to targetFlat.amountPaid,
+                    "remainingDue" to remaining,
+                    "status" to payStatus,
+                    "dueDate" to "10-$currentBillingMonth",
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+        }
+
         batch.commit().await()
         writeAuditLog(
             uid,
@@ -584,7 +692,9 @@ class RentRepository(
 
         for (flat in occupiedFlats) {
             val billId = "${flat.id}_$monthKey"
-            val alreadyExists = existingBills.any { it.id == billId }
+            val billRef = db.collection("monthly_bills").document(billId)
+            val alreadyExists = existingBills.any { it.id == billId } ||
+                (try { billRef.get().await().exists() } catch (_: Exception) { false })
             if (alreadyExists) continue
 
             val previousDue = if (carryForwardUnpaid) {
@@ -597,7 +707,6 @@ class RentRepository(
                 flat.electricityBill + flat.waterBill +
                 flat.gasBill + flat.otherCharges + previousDue
 
-            val billRef = db.collection("monthly_bills").document(billId)
             batch.set(
                 billRef,
                 mapOf(
@@ -670,6 +779,105 @@ class RentRepository(
         handleFirestoreError(it, OperationType.WRITE, "monthly_bills")
     }
 
+    suspend fun ensureCurrentMonthBillForTenant(flat: Flat): Result<MonthlyBill> = runCatching {
+        val uid = requireUserId()
+        val monthKey = FormatUtils.currentMonthKey()
+        val billingMonth = FormatUtils.currentBillingMonth()
+        val billId = "${flat.id}_$monthKey"
+        val billRef = db.collection("monthly_bills").document(billId)
+        val existing = billRef.get().await()
+        if (existing.exists()) {
+            existing.toObject(MonthlyBill::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                ?.copy(id = billId)
+                ?: MonthlyBill(
+                    id = billId,
+                    ownerId = flat.ownerId,
+                    buildingId = flat.buildingId,
+                    buildingName = flat.buildingName,
+                    flatId = flat.id,
+                    flatNumber = flat.flatNumber,
+                    tenantId = flat.tenantId,
+                    tenantUserId = flat.tenantUserId.ifBlank { uid },
+                    tenantEmail = flat.tenantEmail.ifBlank { currentEmail() },
+                    tenantName = flat.tenantName,
+                    billingMonth = billingMonth,
+                    monthKey = monthKey,
+                    monthlyRent = flat.monthlyRent,
+                    serviceCharge = flat.serviceCharge,
+                    electricityBill = flat.electricityBill,
+                    waterBill = flat.waterBill,
+                    gasBill = flat.gasBill,
+                    otherCharges = flat.otherCharges,
+                    previousDueCarriedForward = 0.0,
+                    totalBill = flat.totalMonthlyBill,
+                    amountPaid = flat.amountPaid,
+                    remainingDue = (flat.totalMonthlyBill - flat.amountPaid).coerceAtLeast(0.0),
+                    status = "unpaid",
+                    dueDate = "10-$billingMonth"
+                )
+        } else {
+            val totalBill = flat.totalMonthlyBill
+            val dueDate = "10-$billingMonth"
+            billRef.set(
+                mapOf(
+                    "ownerId" to flat.ownerId,
+                    "buildingId" to flat.buildingId,
+                    "buildingName" to flat.buildingName,
+                    "flatId" to flat.id,
+                    "flatNumber" to flat.flatNumber,
+                    "tenantId" to flat.tenantId.ifBlank { flat.id },
+                    "tenantUserId" to uid,
+                    "tenantEmail" to flat.tenantEmail.ifBlank { currentEmail() },
+                    "tenantName" to flat.tenantName,
+                    "billingMonth" to billingMonth,
+                    "monthKey" to monthKey,
+                    "monthlyRent" to flat.monthlyRent,
+                    "serviceCharge" to flat.serviceCharge,
+                    "electricityBill" to flat.electricityBill,
+                    "waterBill" to flat.waterBill,
+                    "gasBill" to flat.gasBill,
+                    "otherCharges" to flat.otherCharges,
+                    "previousDueCarriedForward" to 0.0,
+                    "totalBill" to totalBill,
+                    "amountPaid" to 0.0,
+                    "remainingDue" to totalBill,
+                    "status" to "unpaid",
+                    "dueDate" to dueDate,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            MonthlyBill(
+                id = billId,
+                ownerId = flat.ownerId,
+                buildingId = flat.buildingId,
+                buildingName = flat.buildingName,
+                flatId = flat.id,
+                flatNumber = flat.flatNumber,
+                tenantId = flat.tenantId.ifBlank { flat.id },
+                tenantUserId = uid,
+                tenantEmail = flat.tenantEmail.ifBlank { currentEmail() },
+                tenantName = flat.tenantName,
+                billingMonth = billingMonth,
+                monthKey = monthKey,
+                monthlyRent = flat.monthlyRent,
+                serviceCharge = flat.serviceCharge,
+                electricityBill = flat.electricityBill,
+                waterBill = flat.waterBill,
+                gasBill = flat.gasBill,
+                otherCharges = flat.otherCharges,
+                previousDueCarriedForward = 0.0,
+                totalBill = totalBill,
+                amountPaid = 0.0,
+                remainingDue = totalBill,
+                status = "unpaid",
+                dueDate = dueDate
+            )
+        }
+    }.onFailure {
+        handleFirestoreError(it, OperationType.WRITE, "monthly_bills")
+    }
+
     // --- TENANT & ADMIN PAYMENTS + ATOMIC VERIFICATION ---
     suspend fun submitTenantPaymentRequest(
         bill: MonthlyBill,
@@ -677,7 +885,10 @@ class RentRepository(
         method: String,
         transactionId: String,
         referenceNumber: String,
-        notes: String
+        notes: String,
+        targetBankAccountId: String = "",
+        targetBankAccountName: String = "",
+        receiptImageBase64: String = ""
     ): Result<String> = runCatching {
         val uid = requireUserId()
         require(amount > 0.0) { "Amount must be positive" }
@@ -700,6 +911,9 @@ class RentRepository(
                 "method" to method,
                 "transactionId" to transactionId,
                 "referenceNumber" to referenceNumber,
+                "targetBankAccountId" to targetBankAccountId,
+                "targetBankAccountName" to targetBankAccountName,
+                "receiptImageBase64" to receiptImageBase64,
                 "gatewayStatus" to "pending",
                 "verificationStatus" to "pending",
                 "paymentDate" to FormatUtils.todayDdMmYyyy(),
@@ -711,6 +925,16 @@ class RentRepository(
             )
         )
 
+        val methodLabel = when (method) {
+            "cash" -> "নগদ / হাতে (Cash)"
+            "bank_transfer" -> "ব্যাংক ট্রান্সফার"
+            "bkash" -> "bKash"
+            "nagad" -> "Nagad"
+            "rocket" -> "Rocket"
+            else -> method.uppercase()
+        }
+        val proofNote = if (receiptImageBase64.isNotBlank()) " • প্রমাণ ছবি সংযুক্ত" else ""
+
         val ownerNotifRef = db.collection("notifications").document()
         batch.set(
             ownerNotifRef,
@@ -718,8 +942,8 @@ class RentRepository(
                 "ownerId" to bill.ownerId,
                 "recipientUid" to bill.ownerId,
                 "recipientEmail" to "",
-                "title" to "New Payment Submitted (${bill.flatNumber})",
-                "body" to "${bill.tenantName} submitted BDT ${amount.toInt()} via $method (Ref: $referenceNumber).",
+                "title" to "নতুন পেমেন্ট ও প্রমাণ (${bill.flatNumber})",
+                "body" to "${bill.tenantName} ৳${amount.toInt()} ($methodLabel)$proofNote। ওকে প্রেস করলে বিল গ্রহণ হবে।",
                 "type" to "payment_submitted",
                 "relatedId" to paymentRef.id,
                 "isRead" to false,
@@ -867,14 +1091,35 @@ class RentRepository(
                     "ownerId" to uid,
                     "recipientUid" to payment.tenantUserId,
                     "recipientEmail" to payment.tenantEmail,
-                    "title" to "Payment Verified ($receiptNumber)",
-                    "body" to "BDT ${payment.amount.toInt()} verified for ${bill.flatNumber}. Remaining due: BDT ${newRemainingDue.toInt()}.",
+                    "title" to "ভাড়া গ্রহণ করা হয়েছে ($receiptNumber)",
+                    "body" to "${bill.flatNumber} ফ্ল্যাটের ৳${payment.amount.toInt()} বিল গ্রহণ করা হয়েছে। বকেয়া: ৳${newRemainingDue.toInt()}।",
                     "type" to "payment_verified",
                     "relatedId" to receiptRef.id,
                     "isRead" to false,
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
+            )
+        }
+
+        // Auto-mark related owner notification as read when owner accepts the bill
+        val relatedNotifs = try {
+            db.collection("notifications")
+                .whereEqualTo("ownerId", uid)
+                .get()
+                .await()
+                .documents
+                .filter {
+                    it.getString("relatedId") == payment.id &&
+                        it.getBoolean("isRead") != true
+                }
+        } catch (_: Exception) {
+            emptyList()
+        }
+        relatedNotifs.forEach { nDoc ->
+            batch.update(
+                nDoc.reference,
+                mapOf("isRead" to true, "updatedAt" to FieldValue.serverTimestamp())
             )
         }
 
@@ -1062,6 +1307,24 @@ class RentRepository(
             )
         }
 
+        if (bill.tenantUserId.isNotBlank() || bill.tenantEmail.isNotBlank()) {
+            batch.set(
+                db.collection("notifications").document(),
+                mapOf(
+                    "ownerId" to uid,
+                    "recipientUid" to bill.tenantUserId,
+                    "recipientEmail" to bill.tenantEmail,
+                    "title" to "ভাড়া গ্রহণ করা হয়েছে ($receiptNumber)",
+                    "body" to "${bill.flatNumber} ফ্ল্যাটের ৳${amount.toInt()} ($method) ভাড়া গ্রহণ করা হয়েছে। বকেয়া: ৳${newRemainingDue.toInt()}।",
+                    "type" to "payment_verified",
+                    "relatedId" to receiptRef.id,
+                    "isRead" to false,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+        }
+
         batch.commit().await()
         writeAuditLog(uid, "admin", "RECORD_PAYMENT", "payment", paymentId, "Recorded BDT $amount ($method) for ${bill.flatNumber}")
         receiptRef.id
@@ -1070,6 +1333,73 @@ class RentRepository(
     }
 
     // --- BANK & CASH ACCOUNTING + EXPENSES ---
+    suspend fun syncPublicBankAccountsToSettings(accounts: List<BankAccount>): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        val encoded = BankInfoJson.encodeFromBankAccounts(accounts)
+        val ownerSettingsRef = db.collection("settings").document("owner_$uid")
+        val ownerSnap = ownerSettingsRef.get().await()
+        if (ownerSnap.exists()) {
+            ownerSettingsRef.update(
+                mapOf(
+                    "bankAccountsJson" to encoded,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        } else {
+            val legacyAppSnap = try {
+                db.collection("settings").document("app_config").get().await()
+            } catch (_: Exception) {
+                null
+            }
+            val sourceLegacy = legacyAppSnap?.takeIf { it.exists() && it.getString("ownerUid") == uid }
+            ownerSettingsRef.set(
+                mapOf(
+                    "ownerUid" to uid,
+                    "appName" to (sourceLegacy?.getString("appName") ?: "Smart Rent Manager"),
+                    "defaultLanguage" to (sourceLegacy?.getString("defaultLanguage") ?: "bn"),
+                    "sslCommerzStoreId" to (sourceLegacy?.getString("sslCommerzStoreId") ?: ""),
+                    "sslCommerzSandboxMode" to (sourceLegacy?.getBoolean("sslCommerzSandboxMode") ?: true),
+                    "bkashNumber" to (sourceLegacy?.getString("bkashNumber") ?: ""),
+                    "nagadNumber" to (sourceLegacy?.getString("nagadNumber") ?: ""),
+                    "rocketNumber" to (sourceLegacy?.getString("rocketNumber") ?: ""),
+                    "bankTransferInstructions" to (sourceLegacy?.getString("bankTransferInstructions") ?: ""),
+                    "bankAccountsJson" to encoded,
+                    "autoBillDay" to ((sourceLegacy?.getLong("autoBillDay")?.toInt()) ?: 1),
+                    "carryForwardEnabled" to (sourceLegacy?.getBoolean("carryForwardEnabled") ?: true),
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        }
+
+        val configRef = db.collection("settings").document("app_config")
+        val configSnap = try { configRef.get().await() } catch (_: Exception) { null }
+        if (configSnap != null && configSnap.exists() && configSnap.getString("ownerUid") == uid) {
+            configRef.update(
+                mapOf(
+                    "bankAccountsJson" to encoded,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        }
+        Unit
+    }.onFailure {
+        handleFirestoreError(it, OperationType.UPDATE, "settings/owner_${auth.currentUser?.uid.orEmpty()}")
+    }
+
+    private suspend fun refreshPublicBankAccountsFromDb() {
+        try {
+            val uid = requireUserId()
+            val snaps = db.collection("bank_accounts")
+                .whereEqualTo("ownerId", uid)
+                .get()
+                .await()
+            val list = snaps.toObjects(BankAccount::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            syncPublicBankAccountsToSettings(list)
+        } catch (_: Exception) {
+        }
+    }
+
     suspend fun addBankAccount(account: BankAccount): Result<String> = runCatching {
         val uid = requireUserId()
         val ref = db.collection("bank_accounts").document()
@@ -1089,6 +1419,7 @@ class RentRepository(
                 "updatedAt" to FieldValue.serverTimestamp()
             )
         ).await()
+        refreshPublicBankAccountsFromDb()
         writeAuditLog(uid, "admin", "ADD_BANK_ACCOUNT", "bank_account", ref.id, "Added ${account.bankName} - ${account.accountName}")
         ref.id
     }.onFailure {
@@ -1269,13 +1600,16 @@ class RentRepository(
         val uid = requireUserId()
         require(account.id.isNotBlank())
         val relatedTxs = db.collection("bank_transactions")
-            .whereEqualTo("bankAccountId", account.id)
+            .whereEqualTo("ownerId", uid)
             .get()
             .await()
+            .documents
+            .filter { it.getString("bankAccountId") == account.id }
         val batch = db.batch()
-        relatedTxs.documents.forEach { doc -> batch.delete(doc.reference) }
+        relatedTxs.forEach { doc -> batch.delete(doc.reference) }
         batch.delete(db.collection("bank_accounts").document(account.id))
         batch.commit().await()
+        refreshPublicBankAccountsFromDb()
         writeAuditLog(uid, "admin", "DELETE_BANK_ACCOUNT", "bank_account", account.id, "Deleted bank account ${account.accountName}")
     }.onFailure {
         handleFirestoreError(it, OperationType.DELETE, "bank_accounts/${account.id}")
@@ -1340,24 +1674,26 @@ class RentRepository(
                 )
             )
             val matchingBankTx = db.collection("bank_transactions")
-                .whereEqualTo("bankAccountId", bankAccount.id)
+                .whereEqualTo("ownerId", uid)
                 .get()
                 .await()
                 .documents
                 .firstOrNull {
-                    it.getString("transactionType") == "expense" &&
+                    it.getString("bankAccountId") == bankAccount.id &&
+                        it.getString("transactionType") == "expense" &&
                         (it.getDouble("amount") ?: 0.0) == expense.amount &&
                         it.getString("description") == expectedDesc
                 }
             matchingBankTx?.let { batch.delete(it.reference) }
         } else if (expense.paymentSource == "cash") {
             val matchingCashTx = db.collection("cash_transactions")
-                .whereEqualTo("transactionType", "cash_out")
+                .whereEqualTo("ownerId", uid)
                 .get()
                 .await()
                 .documents
                 .firstOrNull {
-                    (it.getDouble("amount") ?: 0.0) == expense.amount &&
+                    it.getString("transactionType") == "cash_out" &&
+                        (it.getDouble("amount") ?: 0.0) == expense.amount &&
                         it.getString("description") == expectedDesc
                 }
             matchingCashTx?.let { batch.delete(it.reference) }
@@ -1422,11 +1758,11 @@ class RentRepository(
             }
             if (payment.method == "cash") {
                 val matchingCash = db.collection("cash_transactions")
-                    .whereEqualTo("referenceNumber", payment.transactionId)
+                    .whereEqualTo("ownerId", uid)
                     .get()
                     .await()
                     .documents
-                    .firstOrNull()
+                    .firstOrNull { it.getString("referenceNumber") == payment.transactionId }
                 matchingCash?.let { batch.delete(it.reference) }
             } else if (bankAccount != null && bankAccount.id.isNotBlank()) {
                 batch.update(
@@ -1439,12 +1775,13 @@ class RentRepository(
                 )
                 val refMatch = payment.referenceNumber.ifBlank { payment.transactionId }
                 val matchingBank = db.collection("bank_transactions")
-                    .whereEqualTo("bankAccountId", bankAccount.id)
+                    .whereEqualTo("ownerId", uid)
                     .get()
                     .await()
                     .documents
                     .firstOrNull {
-                        it.getString("transactionType") == "received" &&
+                        it.getString("bankAccountId") == bankAccount.id &&
+                            it.getString("transactionType") == "received" &&
                             (it.getString("referenceNumber") == refMatch ||
                                 it.getString("referenceNumber") == payment.transactionId)
                     }
@@ -1623,27 +1960,71 @@ class RentRepository(
         handleFirestoreError(it, OperationType.UPDATE, "messages/$messageId")
     }
 
+    suspend fun markNotificationRead(notificationId: String): Result<Unit> = runCatching {
+        requireUserId()
+        db.collection("notifications").document(notificationId).update(
+            mapOf("isRead" to true, "updatedAt" to FieldValue.serverTimestamp())
+        ).await()
+        Unit
+    }.onFailure {
+        handleFirestoreError(it, OperationType.UPDATE, "notifications/$notificationId")
+    }
+
+    suspend fun markAllNotificationsRead(notificationIds: List<String>): Result<Unit> = runCatching {
+        requireUserId()
+        if (notificationIds.isEmpty()) return@runCatching
+        val batch = db.batch()
+        notificationIds.take(40).forEach { id ->
+            batch.update(
+                db.collection("notifications").document(id),
+                mapOf("isRead" to true, "updatedAt" to FieldValue.serverTimestamp())
+            )
+        }
+        batch.commit().await()
+        Unit
+    }.onFailure {
+        handleFirestoreError(it, OperationType.UPDATE, "notifications")
+    }
+
     // --- SETTINGS & BACKUP ---
     suspend fun updateAppSettings(settings: AppSettings): Result<Unit> = runCatching {
         val uid = requireUserId()
-        db.collection("settings").document("app_config").update(
-            mapOf(
-                "appName" to settings.appName.trim().ifBlank { "Smart Rent Manager" },
-                "defaultLanguage" to settings.defaultLanguage,
-                "sslCommerzStoreId" to settings.sslCommerzStoreId.trim(),
-                "sslCommerzSandboxMode" to settings.sslCommerzSandboxMode,
-                "bkashNumber" to settings.bkashNumber.trim(),
-                "nagadNumber" to settings.nagadNumber.trim(),
-                "rocketNumber" to settings.rocketNumber.trim(),
-                "bankTransferInstructions" to settings.bankTransferInstructions.trim(),
-                "autoBillDay" to settings.autoBillDay.coerceIn(1, 28),
-                "carryForwardEnabled" to settings.carryForwardEnabled,
-                "updatedAt" to FieldValue.serverTimestamp()
-            )
-        ).await()
-        writeAuditLog(uid, "admin", "UPDATE_SETTINGS", "settings", "app_config", "Updated application & payment gateway settings")
+        val ownerSettingsRef = db.collection("settings").document("owner_$uid")
+        val ownerSnap = ownerSettingsRef.get().await()
+        val updateMap = mapOf(
+            "appName" to settings.appName.trim().ifBlank { "Smart Rent Manager" },
+            "defaultLanguage" to settings.defaultLanguage,
+            "sslCommerzStoreId" to settings.sslCommerzStoreId.trim(),
+            "sslCommerzSandboxMode" to settings.sslCommerzSandboxMode,
+            "bkashNumber" to settings.bkashNumber.trim(),
+            "nagadNumber" to settings.nagadNumber.trim(),
+            "rocketNumber" to settings.rocketNumber.trim(),
+            "bankTransferInstructions" to settings.bankTransferInstructions.trim(),
+            "autoBillDay" to settings.autoBillDay.coerceIn(1, 28),
+            "carryForwardEnabled" to settings.carryForwardEnabled,
+            "updatedAt" to FieldValue.serverTimestamp()
+        )
+        if (ownerSnap.exists()) {
+            ownerSettingsRef.update(updateMap).await()
+        } else {
+            ownerSettingsRef.set(
+                updateMap + mapOf(
+                    "ownerUid" to uid,
+                    "bankAccountsJson" to settings.bankAccountsJson,
+                    "createdAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        }
+
+        val appConfigRef = db.collection("settings").document("app_config")
+        val appConfigSnap = try { appConfigRef.get().await() } catch (_: Exception) { null }
+        if (appConfigSnap != null && appConfigSnap.exists() && appConfigSnap.getString("ownerUid") == uid) {
+            appConfigRef.update(updateMap).await()
+        }
+
+        writeAuditLog(uid, "admin", "UPDATE_SETTINGS", "settings", "owner_$uid", "Updated application & payment gateway settings")
     }.onFailure {
-        handleFirestoreError(it, OperationType.UPDATE, "settings/app_config")
+        handleFirestoreError(it, OperationType.UPDATE, "settings/owner_${auth.currentUser?.uid.orEmpty()}")
     }
 
     fun buildBackupJson(

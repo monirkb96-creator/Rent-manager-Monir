@@ -17,14 +17,22 @@ class AuthViewModel(
     private val _sessionState = MutableStateFlow<SessionResolution>(SessionResolution.Loading)
     val sessionState: StateFlow<SessionResolution> = _sessionState.asStateFlow()
 
-    fun resolveForUser(user: FirebaseUser?) {
+    private val _preferredRole = MutableStateFlow<String?>(null)
+    val preferredRole: StateFlow<String?> = _preferredRole.asStateFlow()
+
+    fun setPreferredRole(role: String?) {
+        _preferredRole.value = role
+    }
+
+    fun resolveForUser(user: FirebaseUser?, explicitRole: String? = _preferredRole.value) {
         if (user == null) {
             _sessionState.value = SessionResolution.Unauthenticated
             return
         }
         _sessionState.value = SessionResolution.Loading
         viewModelScope.launch {
-            _sessionState.value = authRepository.resolveUserSession(user)
+            _sessionState.value = authRepository.resolveUserSession(user, explicitRole)
+            _preferredRole.value = null
         }
     }
 
@@ -32,6 +40,15 @@ class AuthViewModel(
         _sessionState.value = SessionResolution.Loading
         viewModelScope.launch {
             _sessionState.value = authRepository.initializeAsOwner(user)
+            _preferredRole.value = null
+        }
+    }
+
+    fun upgradeCurrentTenantToOwner(user: FirebaseUser) {
+        _sessionState.value = SessionResolution.Loading
+        viewModelScope.launch {
+            _sessionState.value = authRepository.upgradeUnassignedTenantToOwner(user)
+            _preferredRole.value = null
         }
     }
 
@@ -39,6 +56,7 @@ class AuthViewModel(
         _sessionState.value = SessionResolution.Loading
         viewModelScope.launch {
             _sessionState.value = authRepository.initializeAsTenant(user)
+            _preferredRole.value = null
         }
     }
 }

@@ -134,6 +134,9 @@ data class PaymentRecord(
     val method: String = "bkash", // "bkash" | "nagad" | "rocket" | "bank_transfer" | "card" | "sslcommerz" | "cash"
     val transactionId: String = "",
     val referenceNumber: String = "",
+    val targetBankAccountId: String = "",
+    val targetBankAccountName: String = "",
+    val receiptImageBase64: String = "",
     val gatewayStatus: String = "pending", // "pending" | "verified" | "failed" | "cancelled"
     val verificationStatus: String = "pending", // "pending" | "verified" | "rejected"
     val paymentDate: String = "",
@@ -320,8 +323,62 @@ data class AppSettings(
     val nagadNumber: String = "",
     val rocketNumber: String = "",
     val bankTransferInstructions: String = "",
+    val bankAccountsJson: String = "",
     val autoBillDay: Int = 1,
     val carryForwardEnabled: Boolean = true,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )
+
+data class PublicBankInfo(
+    val id: String = "",
+    val accountName: String = "",
+    val bankName: String = "",
+    val accountNumber: String = "",
+    val accountType: String = "Current"
+)
+
+object BankInfoJson {
+    fun encodeFromBankAccounts(accounts: List<BankAccount>): String {
+        val arr = org.json.JSONArray()
+        accounts.forEach { acc ->
+            arr.put(
+                org.json.JSONObject().apply {
+                    put("id", acc.id)
+                    put("accountName", acc.accountName)
+                    put("bankName", acc.bankName)
+                    put("accountNumber", acc.accountNumber)
+                    put("accountType", acc.accountType)
+                }
+            )
+        }
+        return arr.toString()
+    }
+
+    fun decodeList(json: String): List<PublicBankInfo> {
+        if (json.isBlank()) return emptyList()
+        return try {
+            val arr = org.json.JSONArray(json)
+            buildList(arr.length()) {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val bankName = obj.optString("bankName")
+                    val accountNumber = obj.optString("accountNumber")
+                    if (bankName.isNotBlank() || accountNumber.isNotBlank()) {
+                        add(
+                            PublicBankInfo(
+                                id = obj.optString("id"),
+                                accountName = obj.optString("accountName"),
+                                bankName = bankName,
+                                accountNumber = accountNumber,
+                                accountType = obj.optString("accountType", "Current")
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+}

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material3.AlertDialog
@@ -72,6 +73,7 @@ import com.example.i18n.AppLanguage
 import com.example.i18n.LocalLanguage
 import com.example.i18n.LocalStrings
 import com.example.ui.components.ReceiptDetailDialog
+import com.example.ui.components.ReceiptSlipPreviewDialog
 import com.example.ui.components.StatusBadge
 import com.example.ui.theme.StatusPaidText
 import com.example.ui.theme.StatusUnpaidText
@@ -120,6 +122,7 @@ fun AdminTransactionsScreen(
     var showCashTxDialog by remember { mutableStateOf(false) }
     var showExpenseDialog by remember { mutableStateOf(false) }
     var selectedReceipt by remember { mutableStateOf<Receipt?>(null) }
+    var previewSlipPayment by remember { mutableStateOf<PaymentRecord?>(null) }
     var pendingDelete by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
 
     Column(
@@ -170,6 +173,13 @@ fun AdminTransactionsScreen(
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text("${p.buildingName} - ${p.flatNumber}", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
                                         Text("${p.tenantName} • ${p.method.uppercase()} • ${p.paymentDate}", style = MaterialTheme.typography.bodySmall)
+                                        if (p.targetBankAccountName.isNotBlank()) {
+                                            Text(
+                                                text = if (language == AppLanguage.BN) "ব্যাংক: ${p.targetBankAccountName}" else "Bank: ${p.targetBankAccountName}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
                                         Text("Tx: ${p.transactionId} | Ref: ${p.referenceNumber}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -193,11 +203,28 @@ fun AdminTransactionsScreen(
                                         }
                                     }
                                 }
+                                if (p.receiptImageBase64.isNotBlank()) {
+                                    OutlinedButton(
+                                        onClick = { previewSlipPayment = p },
+                                        modifier = Modifier.fillMaxWidth().testTag("admin_tx_view_slip_${p.id}")
+                                    ) {
+                                        Icon(Icons.Filled.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(if (language == AppLanguage.BN) "পেমেন্টের প্রমাণ / রিসিট দেখুন" else "View Payment Proof / Slip")
+                                    }
+                                }
                                 if (p.verificationStatus == "pending") {
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         Button(
                                             onClick = {
-                                                if (p.method != "cash" && state.bankAccounts.size > 1) {
+                                                val preMatchedBank = p.targetBankAccountId.takeIf { it.isNotBlank() }?.let { tid ->
+                                                    state.bankAccounts.firstOrNull { it.id == tid }
+                                                }
+                                                if (p.method == "cash") {
+                                                    onVerifyPayment(p, null)
+                                                } else if (preMatchedBank != null) {
+                                                    onVerifyPayment(p, preMatchedBank)
+                                                } else if (state.bankAccounts.size > 1) {
                                                     verifyBankTargetPayment = p
                                                 } else {
                                                     onVerifyPayment(p, state.bankAccounts.firstOrNull())
@@ -604,6 +631,15 @@ fun AdminTransactionsScreen(
         )
     }
 
+    previewSlipPayment?.let { p ->
+        ReceiptSlipPreviewDialog(
+            base64Image = p.receiptImageBase64,
+            title = if (language == AppLanguage.BN) "ভাড়াটিয়ার ব্যাংক রিসিট স্লিপ" else "Tenant Bank Receipt Slip",
+            subtitle = "${p.buildingName} - ${p.flatNumber} • ${p.tenantName} • ${FormatUtils.formatBdt(p.amount, language)}",
+            onDismiss = { previewSlipPayment = null }
+        )
+    }
+
     pendingDelete?.let { (label, confirmAction) ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
@@ -706,10 +742,10 @@ private fun DirectPaymentDialog(
     var notes by remember { mutableStateOf("") }
 
     val paymentMethods = listOf(
-        "cash" to (if (language == AppLanguage.BN) "নগদ (Cash)" else "Cash"),
-        "bank_transfer" to (if (language == AppLanguage.BN) "ব্যাংক ট্রান্সফার" else "Bank Transfer"),
-        "bkash" to (if (language == AppLanguage.BN) "বিকাশ (bKash)" else "bKash"),
-        "nagad" to (if (language == AppLanguage.BN) "নগদ (Nagad)" else "Nagad")
+        "cash" to strings.cash,
+        "bank_transfer" to strings.bankTransfer,
+        "bkash" to strings.bkash,
+        "nagad" to strings.nagad
     )
 
     AlertDialog(

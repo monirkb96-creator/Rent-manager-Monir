@@ -63,10 +63,17 @@ import com.example.i18n.LocalLanguage
 import com.example.i18n.LocalStrings
 import com.example.ui.components.LanguageToggleChip
 
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material3.minimumInteractiveComponentSize
+
 @Composable
 fun SignInScreen(
     authRepository: AuthRepository,
     credentialManager: CredentialManager? = null,
+    selectedRole: String = "tenant",
+    onRoleSelected: (String) -> Unit = {},
     onLanguageChange: (AppLanguage) -> Unit,
     onAuthSuccess: () -> Unit
 ) {
@@ -168,12 +175,40 @@ fun SignInScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
 
+                        Text(
+                            text = if (language == AppLanguage.BN) {
+                                "প্রথমে আপনার ভূমিকা নির্বাচন করুন:"
+                            } else {
+                                "First, choose how you want to use the app:"
+                            },
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.padding(vertical = 4.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp)
                         ) {
-                            RolePill(strings.roleAdminBadge)
-                            RolePill(strings.roleTenantBadge)
+                            RoleSelectorCard(
+                                title = strings.roleAdminBadge,
+                                subtitle = if (language == AppLanguage.BN) "নিজের ভবন ও ভাড়াটিয়া ম্যানেজ করুন" else "Create & manage your own buildings",
+                                icon = Icons.Filled.Apartment,
+                                selected = selectedRole == "admin",
+                                testTag = "select_role_owner_btn",
+                                onClick = { onRoleSelected("admin") },
+                                modifier = Modifier.weight(1f)
+                            )
+                            RoleSelectorCard(
+                                title = strings.roleTenantBadge,
+                                subtitle = if (language == AppLanguage.BN) "বিল দেখুন ও রিসিট/প্রমাণ দিন" else "View bills & submit payment proof",
+                                icon = Icons.Filled.Home,
+                                selected = selectedRole == "tenant",
+                                testTag = "select_role_tenant_btn",
+                                onClick = { onRoleSelected("tenant") },
+                                modifier = Modifier.weight(1f)
+                            )
                         }
 
                         if (errorMessage != null) {
@@ -189,6 +224,14 @@ fun SignInScreen(
                                     modifier = Modifier.padding(12.dp)
                                 )
                             }
+                        }
+
+                        val buttonLabel = if (selectedRole == "admin") {
+                            if (language == AppLanguage.BN) "মালিক হিসেবে Google দিয়ে লগইন করুন"
+                            else "Sign in as Owner with Google"
+                        } else {
+                            if (language == AppLanguage.BN) "ভাড়াটিয়া হিসেবে Google দিয়ে লগইন করুন"
+                            else "Sign in as Tenant with Google"
                         }
 
                         Button(
@@ -234,7 +277,7 @@ fun SignInScreen(
                                 Icon(Icons.AutoMirrored.Filled.Login, contentDescription = null)
                                 Spacer(Modifier.width(10.dp))
                                 Text(
-                                    text = strings.signInWithGoogle,
+                                    text = buttonLabel,
                                     style = MaterialTheme.typography.labelLarge
                                 )
                             }
@@ -252,9 +295,9 @@ fun SignInScreen(
                             )
                             Text(
                                 text = if (language == AppLanguage.BN) {
-                                    "সুরক্ষিত Google লগইন ও ভূমিকা-ভিত্তিক ডেটা সুরক্ষা"
+                                    "সুরক্ষিত Google লগইন ও প্রতিবেশী/মালিকদের জন্য আলাদা ওয়ার্কস্পেস"
                                 } else {
-                                    "Secured with Google Sign-In & Role-Based Firestore Rules"
+                                    "Secured Google Sign-In & Isolated Workspaces per Owner"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -268,18 +311,62 @@ fun SignInScreen(
 }
 
 @Composable
-private fun RolePill(label: String) {
+private fun RoleSelectorCard(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: Boolean,
+    testTag: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+        border = BorderStroke(
+            width = if (selected) 2.dp else 1.dp,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+        ),
+        modifier = modifier
+            .minimumInteractiveComponentSize()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .testTag(testTag)
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-        )
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = title,
+                    tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+                Icon(
+                    imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
+                    contentDescription = null,
+                    tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2
+            )
+        }
     }
 }
 

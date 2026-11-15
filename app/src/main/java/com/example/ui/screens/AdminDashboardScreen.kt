@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.AccountBalanceWallet
@@ -28,6 +30,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DoorFront
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MoneyOff
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Payments
@@ -71,6 +74,7 @@ import com.example.i18n.LocalStrings
 import com.example.ui.components.ChartBarItem
 import com.example.ui.components.FinancialComparisonChart
 import com.example.ui.components.LanguageToggleChip
+import com.example.ui.components.ReceiptSlipPreviewDialog
 import com.example.ui.components.StatSummaryCard
 import com.example.ui.components.StatusBadge
 import com.example.ui.theme.StatusPaidText
@@ -88,7 +92,9 @@ fun AdminDashboardScreen(
     onVerifyPayment: (PaymentRecord, BankAccount?) -> Unit,
     onRejectPayment: (PaymentRecord, String) -> Unit,
     onNavigateToBuildings: () -> Unit,
-    onNavigateToTransactions: () -> Unit
+    onNavigateToTransactions: () -> Unit,
+    onMarkNotificationRead: (String) -> Unit = {},
+    onMarkAllNotificationsRead: () -> Unit = {}
 ) {
     val strings = LocalStrings.current
     val language = LocalLanguage.current
@@ -99,6 +105,7 @@ fun AdminDashboardScreen(
     var showNotificationsDialog by remember { mutableStateOf(false) }
     var showReportsDialog by remember { mutableStateOf(false) }
     var verifyBankTargetPayment by remember { mutableStateOf<PaymentRecord?>(null) }
+    var previewSlipPayment by remember { mutableStateOf<PaymentRecord?>(null) }
 
     LazyColumn(
         modifier = Modifier
@@ -214,6 +221,86 @@ fun AdminDashboardScreen(
                                 Icon(Icons.Filled.Description, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
                                 Text("PDF / Excel")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Urgent Alert Banner when tenant submits cash/bank payment proof waiting for "OK"
+        if (state.pendingPayments.isNotEmpty()) {
+            item {
+                val firstPending = state.pendingPayments.first()
+                Card(
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Filled.Notifications, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                Text(
+                                    text = if (language == AppLanguage.BN) {
+                                        "নতুন পেমেন্ট প্রমাণ এসেছে (${FormatUtils.formatInt(state.pendingPayments.size, language)}টি)"
+                                    } else {
+                                        "Pending Payment Proofs (${state.pendingPayments.size})"
+                                    },
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            TextButton(onClick = { showNotificationsDialog = true }) {
+                                Text(if (language == AppLanguage.BN) "সব দেখুন" else "View All")
+                            }
+                        }
+                        Text(
+                            text = "${firstPending.buildingName} - ${firstPending.flatNumber} • ${firstPending.tenantName} • ${FormatUtils.formatBdt(firstPending.amount, language)} (${firstPending.method.uppercase()})",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (firstPending.receiptImageBase64.isNotBlank()) {
+                                OutlinedButton(
+                                    onClick = { previewSlipPayment = firstPending },
+                                    modifier = Modifier.testTag("top_alert_view_proof_btn")
+                                ) {
+                                    Icon(Icons.Filled.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(if (language == AppLanguage.BN) "প্রমাণ দেখুন" else "View Proof")
+                                }
+                            }
+                            Button(
+                                onClick = {
+                                    val preMatchedBank = firstPending.targetBankAccountId.takeIf { it.isNotBlank() }?.let { tid ->
+                                        state.bankAccounts.firstOrNull { it.id == tid }
+                                    }
+                                    if (firstPending.method == "cash") {
+                                        onVerifyPayment(firstPending, null)
+                                    } else if (preMatchedBank != null) {
+                                        onVerifyPayment(firstPending, preMatchedBank)
+                                    } else if (state.bankAccounts.size > 1) {
+                                        verifyBankTargetPayment = firstPending
+                                    } else {
+                                        onVerifyPayment(firstPending, state.bankAccounts.firstOrNull())
+                                    }
+                                },
+                                modifier = Modifier.weight(1f).testTag("top_alert_accept_bill_btn")
+                            ) {
+                                Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(strings.verifyPayment)
                             }
                         }
                     }
@@ -386,10 +473,34 @@ fun AdminDashboardScreen(
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.primary
                         )
+                        if (payment.targetBankAccountName.isNotBlank()) {
+                            Text(
+                                text = if (language == AppLanguage.BN) "ব্যাংক: ${payment.targetBankAccountName}" else "Target Bank: ${payment.targetBankAccountName}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        if (payment.receiptImageBase64.isNotBlank()) {
+                            OutlinedButton(
+                                onClick = { previewSlipPayment = payment },
+                                modifier = Modifier.fillMaxWidth().testTag("admin_dash_view_slip_${payment.id}")
+                            ) {
+                                Icon(Icons.Filled.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (language == AppLanguage.BN) "পেমেন্টের প্রমাণ / রিসিট দেখুন" else "View Payment Proof / Slip")
+                            }
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
-                                    if (payment.method != "cash" && state.bankAccounts.size > 1) {
+                                    val preMatchedBank = payment.targetBankAccountId.takeIf { it.isNotBlank() }?.let { tid ->
+                                        state.bankAccounts.firstOrNull { it.id == tid }
+                                    }
+                                    if (payment.method == "cash") {
+                                        onVerifyPayment(payment, null)
+                                    } else if (preMatchedBank != null) {
+                                        onVerifyPayment(payment, preMatchedBank)
+                                    } else if (state.bankAccounts.size > 1) {
                                         verifyBankTargetPayment = payment
                                     } else {
                                         onVerifyPayment(payment, state.bankAccounts.firstOrNull())
@@ -561,26 +672,113 @@ fun AdminDashboardScreen(
     }
 
     if (showNotificationsDialog) {
+        val unreadCount = state.notifications.count { !it.isRead }
         AlertDialog(
             onDismissRequest = { showNotificationsDialog = false },
-            title = { Text(strings.notifications) },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(strings.notifications)
+                    if (unreadCount > 0) {
+                        TextButton(onClick = onMarkAllNotificationsRead) {
+                            Text(if (language == AppLanguage.BN) "সব পঠিত" else "Mark all read")
+                        }
+                    }
+                }
+            },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     if (state.notifications.isEmpty()) {
                         Text(
                             text = if (language == AppLanguage.BN) "কোনো নোটিফিকেশন নেই।" else "No notifications yet.",
                             style = MaterialTheme.typography.bodySmall
                         )
                     } else {
-                        state.notifications.take(8).forEach { n ->
+                        state.notifications.take(15).forEach { n ->
+                            val linkedPayment = if (n.type == "payment_submitted" && n.relatedId.isNotBlank()) {
+                                state.payments.firstOrNull { it.id == n.relatedId }
+                            } else {
+                                null
+                            }
                             Surface(
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                shape = RoundedCornerShape(10.dp),
+                                color = if (!n.isRead) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                },
+                                border = if (!n.isRead) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+                                shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Column(modifier = Modifier.padding(10.dp)) {
-                                    Text(n.title, style = MaterialTheme.typography.labelLarge)
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(n.title, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
                                     Text(n.body, style = MaterialTheme.typography.bodySmall)
+
+                                    if (linkedPayment != null) {
+                                        if (linkedPayment.receiptImageBase64.isNotBlank()) {
+                                            OutlinedButton(
+                                                onClick = { previewSlipPayment = linkedPayment },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Icon(Icons.Filled.Image, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(Modifier.width(6.dp))
+                                                Text(if (language == AppLanguage.BN) "প্রমাণ / রিসিট ছবি দেখুন" else "View Proof / Receipt")
+                                            }
+                                        }
+                                        if (linkedPayment.verificationStatus == "pending") {
+                                            Button(
+                                                onClick = {
+                                                    val preMatchedBank = linkedPayment.targetBankAccountId.takeIf { it.isNotBlank() }?.let { tid ->
+                                                        state.bankAccounts.firstOrNull { it.id == tid }
+                                                    }
+                                                    onMarkNotificationRead(n.id)
+                                                    if (linkedPayment.method == "cash") {
+                                                        onVerifyPayment(linkedPayment, null)
+                                                        showNotificationsDialog = false
+                                                    } else if (preMatchedBank != null) {
+                                                        onVerifyPayment(linkedPayment, preMatchedBank)
+                                                        showNotificationsDialog = false
+                                                    } else if (state.bankAccounts.size > 1) {
+                                                        showNotificationsDialog = false
+                                                        verifyBankTargetPayment = linkedPayment
+                                                    } else {
+                                                        onVerifyPayment(linkedPayment, state.bankAccounts.firstOrNull())
+                                                        showNotificationsDialog = false
+                                                    }
+                                                },
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .testTag("notif_accept_bill_${linkedPayment.id}")
+                                            ) {
+                                                Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(Modifier.width(6.dp))
+                                                Text(strings.verifyPayment)
+                                            }
+                                        } else {
+                                            Text(
+                                                text = if (linkedPayment.verificationStatus == "verified") {
+                                                    if (language == AppLanguage.BN) "✓ বিল গ্রহণ করা হয়েছে" else "✓ Bill Accepted"
+                                                } else {
+                                                    if (language == AppLanguage.BN) "বাতিল করা হয়েছে" else "Rejected"
+                                                },
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                color = StatusPaidText
+                                            )
+                                        }
+                                    } else if (!n.isRead) {
+                                        TextButton(onClick = { onMarkNotificationRead(n.id) }) {
+                                            Text(strings.markAsRead)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -626,6 +824,15 @@ fun AdminDashboardScreen(
             dismissButton = {
                 TextButton(onClick = { verifyBankTargetPayment = null }) { Text(strings.cancel) }
             }
+        )
+    }
+
+    previewSlipPayment?.let { p ->
+        ReceiptSlipPreviewDialog(
+            base64Image = p.receiptImageBase64,
+            title = if (language == AppLanguage.BN) "ভাড়াটিয়ার ব্যাংক রিসিট স্লিপ" else "Tenant Bank Receipt Slip",
+            subtitle = "${p.buildingName} - ${p.flatNumber} • ${p.tenantName} • ${FormatUtils.formatBdt(p.amount, language)}",
+            onDismiss = { previewSlipPayment = null }
         )
     }
 }
