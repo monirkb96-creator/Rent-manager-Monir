@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Apartment
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DoorFront
@@ -43,6 +44,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -94,7 +96,8 @@ fun AdminDashboardScreen(
     onNavigateToBuildings: () -> Unit,
     onNavigateToTransactions: () -> Unit,
     onMarkNotificationRead: (String) -> Unit = {},
-    onMarkAllNotificationsRead: () -> Unit = {}
+    onMarkAllNotificationsRead: () -> Unit = {},
+    onCleanupOrphanedRecords: () -> Unit = {}
 ) {
     val strings = LocalStrings.current
     val language = LocalLanguage.current
@@ -228,10 +231,53 @@ fun AdminDashboardScreen(
             }
         }
 
+        // Orphan Cleanup Banner when deleted buildings left behind old bills/payments
+        if (state.orphanedRecordsCount > 0) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (language == AppLanguage.BN) {
+                                "আগে মুছে ফেলা ভবনের ${FormatUtils.formatInt(state.orphanedRecordsCount, language)}টি পুরোনো বকেয়া/পেমেন্ট রেকর্ড এখনও ড্যাশবোর্ডে রয়ে গেছে (${FormatUtils.formatBdt(state.orphanedDueAmount, language)} বকেয়া)।"
+                            } else {
+                                "${state.orphanedRecordsCount} old record(s) from previously deleted buildings remain (${FormatUtils.formatBdt(state.orphanedDueAmount, language)} due)."
+                            },
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Button(
+                            onClick = onCleanupOrphanedRecords,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError
+                            ),
+                            modifier = Modifier.fillMaxWidth().testTag("dashboard_cleanup_orphans_btn")
+                        ) {
+                            Icon(Icons.Filled.CleaningServices, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (language == AppLanguage.BN) "পুরোনো বকেয়া ও রেকর্ড পরিষ্কার করুন (৳০)" else "Clean Orphaned Bills & Payments")
+                        }
+                    }
+                }
+            }
+        }
+
         // Urgent Alert Banner when tenant submits cash/bank payment proof waiting for "OK"
         if (state.pendingPayments.isNotEmpty()) {
             item {
                 val firstPending = state.pendingPayments.first()
+                val firstMonthLabel = FormatUtils.formatBillingMonthLabel(
+                    FormatUtils.resolvePaymentBillingMonth(firstPending, state.bills),
+                    language
+                )
+                val firstMethodLabel = FormatUtils.formatPaymentMethodLabel(firstPending.method, language)
                 Card(
                     shape = RoundedCornerShape(18.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
@@ -267,7 +313,12 @@ fun AdminDashboardScreen(
                             }
                         }
                         Text(
-                            text = "${firstPending.buildingName} - ${firstPending.flatNumber} • ${firstPending.tenantName} • ${FormatUtils.formatBdt(firstPending.amount, language)} (${firstPending.method.uppercase()})",
+                            text = if (language == AppLanguage.BN) "মাসের ভাড়া: $firstMonthLabel" else "Rent Month: $firstMonthLabel",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "${firstPending.buildingName} - ${firstPending.flatNumber} • ${firstPending.tenantName} • ${FormatUtils.formatBdt(firstPending.amount, language)} ($firstMethodLabel)",
                             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -441,6 +492,11 @@ fun AdminDashboardScreen(
                 )
             }
             items(state.pendingPayments, key = { it.id }) { payment ->
+                val monthLabel = FormatUtils.formatBillingMonthLabel(
+                    FormatUtils.resolvePaymentBillingMonth(payment, state.bills),
+                    language
+                )
+                val methodLabel = FormatUtils.formatPaymentMethodLabel(payment.method, language)
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -450,18 +506,29 @@ fun AdminDashboardScreen(
                         modifier = Modifier.padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = if (language == AppLanguage.BN) "মাসের ভাড়া: $monthLabel" else "Rent Month: $monthLabel",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = "${payment.buildingName} - ${payment.flatNumber}",
                                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                                 )
                                 Text(
-                                    text = "${payment.tenantName} • ${payment.method.uppercase()} • Ref: ${payment.referenceNumber}",
+                                    text = "${payment.tenantName} • $methodLabel • Ref: ${payment.referenceNumber}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

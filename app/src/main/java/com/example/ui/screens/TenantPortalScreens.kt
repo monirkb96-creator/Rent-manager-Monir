@@ -3,10 +3,12 @@ package com.example.ui.screens
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -37,10 +39,12 @@ import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.MarkEmailRead
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -93,6 +97,7 @@ import com.example.util.FormatUtils
 import com.example.util.PdfAndExportManager
 import com.example.util.ReceiptImageUtils
 import kotlinx.coroutines.launch
+import java.io.File
 
 @Composable
 fun TenantHomeScreen(
@@ -516,12 +521,28 @@ fun TenantPaymentsScreen(
         } else {
             items(state.payments, key = { it.id }) { p ->
                 val linkedReceipt = state.receipts.firstOrNull { it.paymentId == p.id || it.id == p.receiptId }
+                val monthLabel = FormatUtils.formatBillingMonthLabel(
+                    FormatUtils.resolvePaymentBillingMonth(p, state.bills),
+                    language
+                )
+                val methodLabel = FormatUtils.formatPaymentMethodLabel(p.method, language)
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                 ) {
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = if (language == AppLanguage.BN) "ভাড়ার মাস: $monthLabel" else "Rent Month: $monthLabel",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -533,7 +554,7 @@ fun TenantPaymentsScreen(
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                     color = MaterialTheme.colorScheme.primary
                                 )
-                                Text("${p.method.uppercase()} • ${FormatUtils.toLocalizedDigits(p.paymentDate, language)}", style = MaterialTheme.typography.bodySmall)
+                                Text("$methodLabel • ${FormatUtils.toLocalizedDigits(p.paymentDate, language)}", style = MaterialTheme.typography.bodySmall)
                                 if (p.targetBankAccountName.isNotBlank()) {
                                     Text(
                                         text = if (language == AppLanguage.BN) "ব্যাংক: ${p.targetBankAccountName}" else "Bank: ${p.targetBankAccountName}",
@@ -1058,9 +1079,9 @@ private fun PayBillDialog(
         ReceiptImageUtils.decodeBase64ToImageBitmap(receiptImageBase64)
     }
 
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+
+    val handlePickedUri: (Uri?) -> Unit = { uri ->
         if (uri != null) {
             isEncodingSlip = true
             slipError = null
@@ -1068,10 +1089,41 @@ private fun PayBillDialog(
                 val res = ReceiptImageUtils.encodeReceiptUriToBase64(context, uri)
                 isEncodingSlip = false
                 res.onSuccess { b64 -> receiptImageBase64 = b64 }
-                    .onFailure { err -> slipError = err.localizedMessage ?: "Failed to load image" }
+                    .onFailure { err ->
+                        slipError = if (language == AppLanguage.BN) {
+                            "ছবি পড়া যায়নি, অনুগ্রহ করে গ্যালারি থেকে অন্য ছবি বা ছোট স্ক্রিনশট দিন (${err.localizedMessage ?: "error"})"
+                        } else {
+                            err.localizedMessage ?: "Failed to load image"
+                        }
+                    }
             }
         }
     }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+        onResult = handlePickedUri
+    )
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+        onResult = handlePickedUri
+    )
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        val capturedUri = pendingCameraUri
+        pendingCameraUri = null
+        if (success && capturedUri != null) {
+            handlePickedUri(capturedUri)
+        }
+    }
+
+    val billMonthLabel = FormatUtils.formatBillingMonthLabel(
+        bill.billingMonth.ifBlank { FormatUtils.currentBillingMonth() },
+        language
+    )
 
     val methods = listOf(
         "cash" to strings.cash,
@@ -1096,6 +1148,17 @@ private fun PayBillDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = if (language == AppLanguage.BN) "ভাড়ার মাস: $billMonthLabel" else "Billing Month: $billMonthLabel",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
                 Text(
                     text = "${strings.remainingDue}: ${FormatUtils.formatBdt(bill.remainingDue, language)}",
                     fontWeight = FontWeight.Bold,
@@ -1228,29 +1291,74 @@ private fun PayBillDialog(
                         slipError?.let { err ->
                             Text(err, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
                             OutlinedButton(
                                 onClick = {
                                     photoPickerLauncher.launch(
                                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                                     )
                                 },
-                                modifier = Modifier.weight(1f).testTag("pick_receipt_slip_btn")
+                                modifier = Modifier.testTag("pick_receipt_slip_btn")
                             ) {
-                                Icon(Icons.Filled.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
+                                Icon(Icons.Filled.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
                                 Text(
-                                    text = if (receiptImageBase64.isBlank()) {
-                                        if (language == AppLanguage.BN) "রিসিট ছবি নির্বাচন করুন" else "Choose Receipt Photo"
-                                    } else {
-                                        if (language == AppLanguage.BN) "ছবি পরিবর্তন করুন" else "Change Photo"
-                                    }
+                                    text = if (language == AppLanguage.BN) "গ্যালারি" else "Gallery",
+                                    maxLines = 1
                                 )
                             }
-                            if (receiptImageBase64.isNotBlank()) {
-                                TextButton(onClick = { receiptImageBase64 = "" }) {
-                                    Text(strings.delete, color = MaterialTheme.colorScheme.error)
-                                }
+                            OutlinedButton(
+                                onClick = {
+                                    try {
+                                        filePickerLauncher.launch("image/*")
+                                    } catch (e: Exception) {
+                                        slipError = e.localizedMessage ?: "File picker unavailable"
+                                    }
+                                },
+                                modifier = Modifier.testTag("pick_receipt_file_btn")
+                            ) {
+                                Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    text = if (language == AppLanguage.BN) "ফাইল" else "Files",
+                                    maxLines = 1
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    try {
+                                        val dir = File(context.cacheDir, "camera_proofs").apply { mkdirs() }
+                                        val file = File(dir, "proof_${System.currentTimeMillis()}.jpg")
+                                        val uri = FileProvider.getUriForFile(
+                                            context,
+                                            "${context.packageName}.fileprovider",
+                                            file
+                                        )
+                                        pendingCameraUri = uri
+                                        cameraLauncher.launch(uri)
+                                    } catch (e: Exception) {
+                                        slipError = e.localizedMessage ?: "Camera unavailable"
+                                    }
+                                },
+                                modifier = Modifier.testTag("camera_receipt_slip_btn")
+                            ) {
+                                Icon(Icons.Filled.PhotoCamera, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    text = if (language == AppLanguage.BN) "ছবি তুলুন" else "Camera",
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                        if (receiptImageBase64.isNotBlank()) {
+                            TextButton(
+                                onClick = { receiptImageBase64 = "" },
+                                modifier = Modifier.align(Alignment.End)
+                            ) {
+                                Text(strings.delete, color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
@@ -1258,7 +1366,7 @@ private fun PayBillDialog(
 
                 OutlinedTextField(
                     value = amount,
-                    onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } },
+                    onValueChange = { amount = FormatUtils.toAsciiDigits(it).filter { c -> c.isDigit() || c == '.' } },
                     label = { Text(strings.paymentAmount) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth().testTag("tenant_pay_amount_input")
@@ -1288,7 +1396,7 @@ private fun PayBillDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val amt = amount.toDoubleOrNull() ?: 0.0
+                    val amt = FormatUtils.parseLocalizedDouble(amount) ?: 0.0
                     if (amt > 0.0) {
                         val bankId = if (method == "bank_transfer") selectedBank?.id.orEmpty() else ""
                         val bankName = if (method == "bank_transfer" && selectedBank != null) {
@@ -1297,7 +1405,7 @@ private fun PayBillDialog(
                         onSubmit(amt, method, ref, notes, bankId, bankName, receiptImageBase64)
                     }
                 },
-                enabled = !isEncodingSlip && (amount.toDoubleOrNull() ?: 0.0) > 0.0,
+                enabled = !isEncodingSlip && (FormatUtils.parseLocalizedDouble(amount) ?: 0.0) > 0.0,
                 modifier = Modifier.testTag("submit_tenant_payment_btn")
             ) {
                 Text(strings.submitPayment)

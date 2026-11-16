@@ -25,8 +25,10 @@ import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.ReceiptLong
@@ -43,6 +45,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -99,7 +102,9 @@ fun AdminTransactionsScreen(
     onDeleteBankTx: (BankTransaction) -> Unit = {},
     onDeleteCashTx: (CashTransaction) -> Unit = {},
     onDeleteExpense: (Expense) -> Unit = {},
-    onDeleteReceipt: (Receipt) -> Unit = {}
+    onDeleteReceipt: (Receipt) -> Unit = {},
+    onCleanupOrphanedRecords: () -> Unit = {},
+    onResetAllTransactionsAndBills: () -> Unit = {}
 ) {
     val strings = LocalStrings.current
     val language = LocalLanguage.current
@@ -124,6 +129,7 @@ fun AdminTransactionsScreen(
     var selectedReceipt by remember { mutableStateOf<Receipt?>(null) }
     var previewSlipPayment by remember { mutableStateOf<PaymentRecord?>(null) }
     var pendingDelete by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
+    var showResetConfirm by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -147,24 +153,88 @@ fun AdminTransactionsScreen(
         ) {
             when (selectedTab) {
                 0 -> {
+                    if (state.orphanedRecordsCount > 0) {
+                        item {
+                            Card(
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error)
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = if (language == AppLanguage.BN) {
+                                            "মুছে ফেলা ভবনের ${FormatUtils.formatInt(state.orphanedRecordsCount, language)}টি পুরোনো রেকর্ড (বকেয়া: ${FormatUtils.formatBdt(state.orphanedDueAmount, language)}) পাওয়া গেছে"
+                                        } else {
+                                            "${state.orphanedRecordsCount} orphaned records from deleted buildings (Due: ${FormatUtils.formatBdt(state.orphanedDueAmount, language)})"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                    Button(
+                                        onClick = onCleanupOrphanedRecords,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.error,
+                                            contentColor = MaterialTheme.colorScheme.onError
+                                        ),
+                                        modifier = Modifier.fillMaxWidth().testTag("tx_cleanup_orphans_btn")
+                                    ) {
+                                        Icon(Icons.Filled.CleaningServices, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(if (language == AppLanguage.BN) "পুরোনো বকেয়া ও রেকর্ড পরিষ্কার করুন" else "Clean Orphaned Records")
+                                    }
+                                }
+                            }
+                        }
+                    }
                     item {
-                        Button(
-                            onClick = { showDirectPaymentDialog = true },
-                            enabled = state.bills.any { it.remainingDue > 0.0 },
-                            modifier = Modifier.fillMaxWidth().testTag("record_direct_payment_btn")
-                        ) {
-                            Icon(Icons.Filled.Add, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text(if (language == AppLanguage.BN) "সরাসরি ভাড়া আদায় রেকর্ড করুন" else "Record Direct Cash / Bank Payment")
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { showDirectPaymentDialog = true },
+                                enabled = state.bills.any { it.remainingDue > 0.0 },
+                                modifier = Modifier.fillMaxWidth().testTag("record_direct_payment_btn")
+                            ) {
+                                Icon(Icons.Filled.Add, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text(if (language == AppLanguage.BN) "সরাসরি ভাড়া আদায় রেকর্ড করুন" else "Record Direct Cash / Bank Payment")
+                            }
+                            if (state.payments.isNotEmpty() || state.bills.isNotEmpty() || state.bankTransactions.isNotEmpty() || state.cashTransactions.isNotEmpty() || state.expenses.isNotEmpty()) {
+                                OutlinedButton(
+                                    onClick = { showResetConfirm = true },
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                    modifier = Modifier.fillMaxWidth().testTag("tx_reset_all_btn")
+                                ) {
+                                    Icon(Icons.Filled.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(if (language == AppLanguage.BN) "সব লেনদেন ও বকেয়া রিসেট করুন (৳০)" else "Reset All Transactions & Bills (Zero)")
+                                }
+                            }
                         }
                     }
                     items(state.payments, key = { it.id }) { p ->
+                        val monthStr = FormatUtils.resolvePaymentBillingMonth(p, state.bills)
+                        val monthLabel = FormatUtils.formatBillingMonthLabel(monthStr, language)
+                        val methodLabel = FormatUtils.formatPaymentMethodLabel(p.method, language)
                         Card(
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                         ) {
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        text = if (language == AppLanguage.BN) "মাসের ভাড়া: $monthLabel" else "Rent Month: $monthLabel",
+                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -172,7 +242,7 @@ fun AdminTransactionsScreen(
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text("${p.buildingName} - ${p.flatNumber}", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-                                        Text("${p.tenantName} • ${p.method.uppercase()} • ${p.paymentDate}", style = MaterialTheme.typography.bodySmall)
+                                        Text("${p.tenantName} • $methodLabel • ${FormatUtils.toLocalizedDigits(p.paymentDate, language)}", style = MaterialTheme.typography.bodySmall)
                                         if (p.targetBankAccountName.isNotBlank()) {
                                             Text(
                                                 text = if (language == AppLanguage.BN) "ব্যাংক: ${p.targetBankAccountName}" else "Bank: ${p.targetBankAccountName}",
@@ -677,6 +747,42 @@ fun AdminTransactionsScreen(
             }
         )
     }
+
+    if (showResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirm = false },
+            title = {
+                Text(if (language == AppLanguage.BN) "সব লেনদেন ও বকেয়া রিসেট করবেন?" else "Reset All Transactions & Bills?")
+            },
+            text = {
+                Text(
+                    if (language == AppLanguage.BN) {
+                        "সকল পেমেন্ট, রসিদ, মাসিক বিল, ক্যাশ ও ব্যাংক লেনদেন এবং খরচ মুছে যাবে এবং ড্যাশবোর্ডের মোট আদায় ও মোট বকেয়া ৳০ হয়ে যাবে। আপনার ভবন ও ফ্ল্যাটের তালিকা ঠিক থাকবে।"
+                    } else {
+                        "All payments, receipts, monthly bills, cash/bank transactions, and expenses will be cleared so totals reset to zero. Your buildings and flats remain intact."
+                    }
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showResetConfirm = false
+                        onResetAllTransactionsAndBills()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    modifier = Modifier.testTag("confirm_reset_all_tx_btn")
+                ) {
+                    Text(if (language == AppLanguage.BN) "সব রিসেট করুন (৳০)" else "Reset All (Zero)")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirm = false }) { Text(strings.cancel) }
+            }
+        )
+    }
 }
 
 @Composable
@@ -816,7 +922,7 @@ private fun DirectPaymentDialog(
                 }
                 OutlinedTextField(
                     value = amount,
-                    onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } },
+                    onValueChange = { amount = FormatUtils.toAsciiDigits(it).filter { c -> c.isDigit() || c == '.' } },
                     label = { Text(strings.paymentAmount) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth()
@@ -839,10 +945,10 @@ private fun DirectPaymentDialog(
             Button(
                 onClick = {
                     val b = selectedBill ?: return@Button
-                    val amt = amount.toDoubleOrNull() ?: return@Button
+                    val amt = FormatUtils.parseLocalizedDouble(amount) ?: return@Button
                     onSave(b, amt, method, ref, if (method == "cash") null else selectedBank, notes)
                 },
-                enabled = selectedBill != null && (amount.toDoubleOrNull() ?: 0.0) > 0.0
+                enabled = selectedBill != null && (FormatUtils.parseLocalizedDouble(amount) ?: 0.0) > 0.0
             ) { Text(strings.save) }
         },
         dismissButton = {
@@ -874,7 +980,7 @@ private fun AddBankAccountDialog(
                 OutlinedTextField(value = accountType, onValueChange = { accountType = it }, label = { Text("Account Type (Savings/Current)") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(
                     value = opening,
-                    onValueChange = { opening = it.filter { c -> c.isDigit() || c == '.' } },
+                    onValueChange = { opening = FormatUtils.toAsciiDigits(it).filter { c -> c.isDigit() || c == '.' } },
                     label = { Text(strings.openingBalance) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth()
@@ -890,7 +996,7 @@ private fun AddBankAccountDialog(
                             bankName = bankName,
                             accountNumber = accountNumber,
                             accountType = accountType,
-                            openingBalance = opening.toDoubleOrNull() ?: 0.0
+                            openingBalance = FormatUtils.parseLocalizedDouble(opening) ?: 0.0
                         )
                     )
                 },
@@ -980,7 +1086,7 @@ private fun BankTxDialog(
                 }
                 OutlinedTextField(
                     value = amount,
-                    onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } },
+                    onValueChange = { amount = FormatUtils.toAsciiDigits(it).filter { c -> c.isDigit() || c == '.' } },
                     label = { Text(strings.paymentAmount) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth()
@@ -1003,7 +1109,7 @@ private fun BankTxDialog(
             Button(
                 onClick = {
                     onSave(
-                        amount.toDoubleOrNull() ?: 0.0,
+                        FormatUtils.parseLocalizedDouble(amount) ?: 0.0,
                         type,
                         desc,
                         ref,
@@ -1011,7 +1117,7 @@ private fun BankTxDialog(
                         selectedFlat?.id.orEmpty()
                     )
                 },
-                enabled = (amount.toDoubleOrNull() ?: 0.0) > 0.0 && desc.isNotBlank()
+                enabled = (FormatUtils.parseLocalizedDouble(amount) ?: 0.0) > 0.0 && desc.isNotBlank()
             ) { Text(strings.save) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(strings.cancel) } }
@@ -1038,15 +1144,15 @@ private fun CashTxDialog(
                     FilterChip(selected = type == "cash_in", onClick = { type = "cash_in" }, label = { Text("Cash In") })
                     FilterChip(selected = type == "cash_out", onClick = { type = "cash_out" }, label = { Text("Cash Out") })
                 }
-                OutlinedTextField(value = amount, onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text(strings.paymentAmount) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = amount, onValueChange = { amount = FormatUtils.toAsciiDigits(it).filter { c -> c.isDigit() || c == '.' } }, label = { Text(strings.paymentAmount) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text(strings.description) }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = ref, onValueChange = { ref = it }, label = { Text(strings.transactionRef) }, modifier = Modifier.fillMaxWidth())
             }
         },
         confirmButton = {
             Button(
-                onClick = { onSave(amount.toDoubleOrNull() ?: 0.0, type, desc, ref) },
-                enabled = (amount.toDoubleOrNull() ?: 0.0) > 0.0 && desc.isNotBlank()
+                onClick = { onSave(FormatUtils.parseLocalizedDouble(amount) ?: 0.0, type, desc, ref) },
+                enabled = (FormatUtils.parseLocalizedDouble(amount) ?: 0.0) > 0.0 && desc.isNotBlank()
             ) { Text(strings.save) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(strings.cancel) } }
@@ -1105,7 +1211,7 @@ private fun AddExpenseDialog(
                         }
                     }
                 }
-                OutlinedTextField(value = amount, onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text(strings.paymentAmount) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = amount, onValueChange = { amount = FormatUtils.toAsciiDigits(it).filter { c -> c.isDigit() || c == '.' } }, label = { Text(strings.paymentAmount) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text(strings.description) }, modifier = Modifier.fillMaxWidth())
             }
         },
@@ -1117,7 +1223,7 @@ private fun AddExpenseDialog(
                             buildingId = selectedBuilding?.id ?: "",
                             buildingName = selectedBuilding?.name ?: "General",
                             category = category,
-                            amount = amount.toDoubleOrNull() ?: 0.0,
+                            amount = FormatUtils.parseLocalizedDouble(amount) ?: 0.0,
                             date = FormatUtils.todayDdMmYyyy(),
                             paymentSource = source,
                             description = desc
@@ -1125,7 +1231,7 @@ private fun AddExpenseDialog(
                         if (source == "bank") selectedBank else null
                     )
                 },
-                enabled = (amount.toDoubleOrNull() ?: 0.0) > 0.0 && desc.isNotBlank() && (source != "bank" || selectedBank != null)
+                enabled = (FormatUtils.parseLocalizedDouble(amount) ?: 0.0) > 0.0 && desc.isNotBlank() && (source != "bank" || selectedBank != null)
             ) { Text(strings.save) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(strings.cancel) } }

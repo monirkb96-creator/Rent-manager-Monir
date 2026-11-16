@@ -194,7 +194,7 @@ class TenantViewModel(
     ) {
         viewModelScope.launch {
             _isBusy.value = true
-            val resolvedBill = if (uiState.value.bills.any { it.id == bill.id }) {
+            val baseResolvedBill = if (uiState.value.bills.any { it.id == bill.id }) {
                 bill
             } else {
                 val flat = uiState.value.flat
@@ -211,6 +211,9 @@ class TenantViewModel(
                     bill
                 }
             }
+            val resolvedBill = baseResolvedBill.copy(
+                ownerId = baseResolvedBill.ownerId.ifBlank { uiState.value.flat?.ownerId.orEmpty() }
+            )
 
             val tranId = sslCommerzClient.generateTransactionId(method.take(3).uppercase())
 

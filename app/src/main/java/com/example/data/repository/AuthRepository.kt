@@ -430,11 +430,23 @@ class AuthRepository(
     ): UserProfile {
         if (email.isBlank()) return profile
         return try {
+            val normalizedEmail = email.trim().lowercase()
             val matchingTenants = db.collection("tenants")
                 .whereEqualTo("email", email)
                 .get()
                 .await()
-            val tenantDoc = matchingTenants.documents.firstOrNull() ?: return profile
+            val tenantDoc = matchingTenants.documents.firstOrNull()
+                ?: if (normalizedEmail != email) {
+                    db.collection("tenants")
+                        .whereEqualTo("email", normalizedEmail)
+                        .get()
+                        .await()
+                        .documents
+                        .firstOrNull()
+                } else {
+                    null
+                }
+                ?: return profile
             val tenantId = tenantDoc.id
             val buildingId = tenantDoc.getString("buildingId").orEmpty()
             val flatId = tenantDoc.getString("flatId").orEmpty()
@@ -455,7 +467,17 @@ class AuthRepository(
                     .whereEqualTo("tenantEmail", email)
                     .get()
                     .await()
-                for (fDoc in flatDocs.documents) {
+                    .documents
+                    .ifEmpty {
+                        if (normalizedEmail != email) {
+                            db.collection("flats")
+                                .whereEqualTo("tenantEmail", normalizedEmail)
+                                .get()
+                                .await()
+                                .documents
+                        } else emptyList()
+                    }
+                for (fDoc in flatDocs) {
                     if (fDoc.getString("tenantUserId").orEmpty().isBlank()) {
                         fDoc.reference.update(
                             mapOf(
@@ -471,7 +493,17 @@ class AuthRepository(
                 .whereEqualTo("tenantEmail", email)
                 .get()
                 .await()
-            for (bDoc in billDocs.documents) {
+                .documents
+                .ifEmpty {
+                    if (normalizedEmail != email) {
+                        db.collection("monthly_bills")
+                            .whereEqualTo("tenantEmail", normalizedEmail)
+                            .get()
+                            .await()
+                            .documents
+                    } else emptyList()
+                }
+            for (bDoc in billDocs) {
                 if (bDoc.getString("tenantUserId").orEmpty().isBlank()) {
                     bDoc.reference.update(
                         mapOf(

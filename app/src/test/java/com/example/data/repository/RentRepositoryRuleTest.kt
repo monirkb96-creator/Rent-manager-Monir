@@ -1,6 +1,7 @@
 package com.example.data.repository
 
 import com.example.base.FirestoreEmulatorTestBase
+import com.example.data.model.BankAccount
 import com.example.data.model.Building
 import com.example.data.model.Flat
 import com.example.data.model.MonthlyBill
@@ -436,8 +437,278 @@ class RentRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertTrue(readNotifs.any { it.relatedId == payId && it.isRead })
     }
 
+    @Test
+    fun tenantWithNoPreExistingBill_ensureAndSubmitPayment_succeedsWithoutPermissionDenied() = runBlocking {
+        val uniqueSuffix = UUID.randomUUID().toString().take(6)
+        val ownerEmail = "owner_nobill_$uniqueSuffix@test.com"
+        val tenantEmail = "tenant_nobill_$uniqueSuffix@test.com"
+        val ownerUid = bootstrapOwner(ownerEmail)
+        auth.signOut()
+
+        val tenantUid = signInTestUser(tenantEmail)
+        AuthRepository(firestore, auth).resolveUserSession(checkNotNull(auth.currentUser), preferredRole = "tenant")
+        auth.signOut()
+
+        signInTestUser(ownerEmail)
+        val ownerRepo = RentRepository(firestore, auth)
+        val bldgId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            ownerRepo.saveBuilding(
+                Building(name = "NoBill Tower $uniqueSuffix", address = "Dhaka", floorsCount = 2, totalFlats = 4)
+            ).getOrThrow()
+        }
+        // Save flat directly with tenant already linked (without calling saveAndAssignTenant, so no monthly_bills doc exists)
+        val flatId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            ownerRepo.saveFlat(
+                Flat(
+                    ownerId = ownerUid,
+                    buildingId = bldgId,
+                    buildingName = "NoBill Tower $uniqueSuffix",
+                    flatNumber = "G2",
+                    floorNumber = 0,
+                    monthlyRent = 2000.0,
+                    serviceCharge = 100.0,
+                    tenantId = "t_$uniqueSuffix",
+                    tenantUserId = tenantUid,
+                    tenantEmail = tenantEmail,
+                    tenantName = "Kamal",
+                    tenantPhone = "01711111111",
+                    isOccupied = true
+                )
+            ).getOrThrow()
+        }
+        auth.signOut()
+
+        signInTestUser(tenantEmail)
+        val tenantRepo = RentRepository(firestore, auth)
+        val tenantFlat = withTimeout(FLOW_TIMEOUT_MS) {
+            tenantRepo.observeTenantFlats(tenantUid).first { list -> list.any { it.id == flatId } }.first { it.id == flatId }
+        }
+        val ensuredBill = withTimeout(DEFAULT_TIMEOUT_MS) {
+            tenantRepo.ensureCurrentMonthBillForTenant(tenantFlat).getOrThrow()
+        }
+        assertEquals(2100.0, ensuredBill.totalBill, 0.01)
+
+        val payId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            tenantRepo.submitTenantPaymentRequest(
+                bill = ensuredBill,
+                amount = 2100.0,
+                method = "cash",
+                transactionId = "CSH_NOBILL_$uniqueSuffix",
+                referenceNumber = "SLIP-$uniqueSuffix",
+                notes = "Handed cash with proof",
+                receiptImageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+            ).getOrThrow()
+        }
+        assertTrue(payId.isNotEmpty())
+    }
+
+    @Test
+    fun deleteBuilding_cascadesFlatsTenantsBillsPaymentsAndRollsBackBankBalance() = runBlocking {
+        val uniqueSuffix = UUID.randomUUID().toString().take(6)
+        val ownerEmail = "owner_cascade_$uniqueSuffix@test.com"
+        val ownerUid = bootstrapOwner(ownerEmail)
+        val repo = RentRepository(firestore, auth)
+
+        val bankId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.addBankAccount(
+                BankAccount(
+                    ownerId = ownerUid,
+                    accountName = "Cascade Bank",
+                    bankName = "BRAC",
+                    accountNumber = "11223344",
+                    accountType = "Current",
+                    openingBalance = 1000.0
+                )
+            ).getOrThrow()
+        }
+        val bldgId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveBuilding(
+                Building(name = "Cascade Tower $uniqueSuffix", address = "Dhaka", floorsCount = 3, totalFlats = 3)
+            ).getOrThrow()
+        }
+        val flatId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveFlat(
+                Flat(
+                    ownerId = ownerUid,
+                    buildingId = bldgId,
+                    buildingName = "Cascade Tower $uniqueSuffix",
+                    flatNumber = "3B",
+                    floorNumber = 3,
+                    monthlyRent = 25800.0,
+                    isOccupied = false
+                )
+            ).getOrThrow()
+        }
+        val savedFlat = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeFlats().first { list -> list.any { it.id == flatId } }.first { it.id == flatId }
+        }
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveAndAssignTenant(
+                Tenant(name = "Riyad", email = "riyad_$uniqueSuffix@test.com", phone = "01712345678"),
+                savedFlat
+            ).getOrThrow()
+        }
+        val bill = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeBills().first { list -> list.any { it.flatId == flatId } }.first { it.flatId == flatId }
+        }
+        val savedBank = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeBankAccounts().first { list -> list.any { it.id == bankId } }.first { it.id == bankId }
+        }
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.recordAdminDirectPayment(
+                bill = bill,
+                amount = 25800.0,
+                method = "bank_transfer",
+                referenceNumber = "REF_$uniqueSuffix",
+                targetBankAccount = savedBank,
+                notes = "Rent paid"
+            ).getOrThrow()
+        }
+
+        // Delete the entire building
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.deleteBuilding(Building(id = bldgId, ownerId = ownerUid, name = "Cascade Tower $uniqueSuffix")).getOrThrow()
+        }
+
+        val remainingFlats = withTimeout(FLOW_TIMEOUT_MS) { repo.observeFlats().first() }
+        val remainingBills = withTimeout(FLOW_TIMEOUT_MS) { repo.observeBills().first() }
+        val remainingPayments = withTimeout(FLOW_TIMEOUT_MS) { repo.observePayments().first() }
+        val bankAfter = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeBankAccounts().first { list -> list.any { it.id == bankId } }.first { it.id == bankId }
+        }
+
+        assertTrue("Flats should be empty after building cascade", remainingFlats.none { it.buildingId == bldgId })
+        assertTrue("Bills should be empty after building cascade", remainingBills.none { it.buildingId == bldgId })
+        assertTrue("Payments should be empty after building cascade", remainingPayments.none { it.buildingId == bldgId })
+        assertEquals(1000.0, bankAfter.currentBalance, 0.01)
+        assertEquals(0.0, bankAfter.moneyReceived, 0.01)
+    }
+
+    @Test
+    fun deletePayment_succeedsEvenAfterFlatReceiptAndBillAreAlreadyDeleted() = runBlocking {
+        val uniqueSuffix = UUID.randomUUID().toString().take(6)
+        val ownerEmail = "owner_orphanpay_$uniqueSuffix@test.com"
+        val ownerUid = bootstrapOwner(ownerEmail)
+        val repo = RentRepository(firestore, auth)
+
+        val bldgId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveBuilding(Building(name = "Adrita Manson $uniqueSuffix", address = "Dhaka", floorsCount = 3, totalFlats = 3)).getOrThrow()
+        }
+        val flatId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveFlat(
+                Flat(
+                    ownerId = ownerUid,
+                    buildingId = bldgId,
+                    buildingName = "Adrita Manson $uniqueSuffix",
+                    flatNumber = "3B",
+                    floorNumber = 3,
+                    monthlyRent = 25800.0
+                )
+            ).getOrThrow()
+        }
+        val savedFlat = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeFlats().first { list -> list.any { it.id == flatId } }.first { it.id == flatId }
+        }
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveAndAssignTenant(
+                Tenant(name = "Riyad", email = "riyad2_$uniqueSuffix@test.com", phone = "01712345679"),
+                savedFlat
+            ).getOrThrow()
+        }
+        val bill = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeBills().first { list -> list.any { it.flatId == flatId } }.first { it.flatId == flatId }
+        }
+        val bankId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.addBankAccount(BankAccount(ownerId = ownerUid, accountName = "UCBL", bankName = "UCBL", accountNumber = "9988", openingBalance = 500.0)).getOrThrow()
+        }
+        val bank = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeBankAccounts().first { list -> list.any { it.id == bankId } }.first { it.id == bankId }
+        }
+        val receiptId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.recordAdminDirectPayment(bill, 25800.0, "bank_transfer", "ADM_$uniqueSuffix", bank, "").getOrThrow()
+        }
+        val payment = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observePayments().first { list -> list.any { it.receiptId == receiptId } }.first { it.receiptId == receiptId }
+        }
+
+        // Simulate missing flat, bill, and receipt docs prior to deletePayment
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            firestore.collection("flats").document(flatId).delete().await()
+            firestore.collection("monthly_bills").document(bill.id).delete().await()
+            firestore.collection("receipts").document(receiptId).delete().await()
+        }
+
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.deletePayment(payment, bill = null, bankAccount = null).getOrThrow()
+        }
+
+        val paymentsAfter = withTimeout(FLOW_TIMEOUT_MS) { repo.observePayments().first() }
+        val bankAfter = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeBankAccounts().first { list -> list.any { it.id == bankId } }.first { it.id == bankId }
+        }
+        assertTrue("Orphaned payment should be deleted", paymentsAfter.none { it.id == payment.id })
+        assertEquals(500.0, bankAfter.currentBalance, 0.01)
+    }
+
+    @Test
+    fun cleanupOrphanedRecords_and_resetAllTransactionsAndBills_zeroOutTotals() = runBlocking {
+        val uniqueSuffix = UUID.randomUUID().toString().take(6)
+        val ownerEmail = "owner_reset_$uniqueSuffix@test.com"
+        val ownerUid = bootstrapOwner(ownerEmail)
+        val repo = RentRepository(firestore, auth)
+
+        val bldgId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveBuilding(Building(name = "Reset Tower $uniqueSuffix", address = "Dhaka", floorsCount = 2, totalFlats = 2)).getOrThrow()
+        }
+        val flatId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveFlat(
+                Flat(
+                    ownerId = ownerUid,
+                    buildingId = bldgId,
+                    buildingName = "Reset Tower $uniqueSuffix",
+                    flatNumber = "1A",
+                    floorNumber = 1,
+                    monthlyRent = 12000.0
+                )
+            ).getOrThrow()
+        }
+        val savedFlat = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeFlats().first { list -> list.any { it.id == flatId } }.first { it.id == flatId }
+        }
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveAndAssignTenant(
+                Tenant(name = "Tenant", email = "t_reset_$uniqueSuffix@test.com", phone = "01711112222"),
+                savedFlat
+            ).getOrThrow()
+        }
+        val bill = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeBills().first { list -> list.any { it.flatId == flatId } }.first { it.flatId == flatId }
+        }
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.recordAdminDirectPayment(bill, 5000.0, "cash", "CASH_$uniqueSuffix", null, "").getOrThrow()
+        }
+
+        // Remove building doc directly to simulate pre-existing orphaned bill/flat
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            firestore.collection("buildings").document(bldgId).delete().await()
+        }
+        val cleaned = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.cleanupOrphanedRecords().getOrThrow()
+        }
+        assertTrue("Expected orphaned records cleaned > 0", cleaned > 0)
+        assertTrue(withTimeout(FLOW_TIMEOUT_MS) { repo.observeBills().first() }.isEmpty())
+        assertTrue(withTimeout(FLOW_TIMEOUT_MS) { repo.observePayments().first() }.isEmpty())
+
+        // Reset all transactions check
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.resetAllTransactionsAndBills().getOrThrow()
+        }
+        assertTrue(withTimeout(FLOW_TIMEOUT_MS) { repo.observeCashTransactions().first() }.isEmpty())
+    }
+
     private companion object {
         const val DEFAULT_TIMEOUT_MS = 5000L
         const val FLOW_TIMEOUT_MS = 4000L
     }
 }
+

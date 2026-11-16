@@ -47,6 +47,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -322,30 +323,97 @@ fun AdminTenantsScreen(
     }
 
     historyTargetTenant?.let { tenant ->
-        val tenantPayments = state.payments.filter { it.tenantId == tenant.id }
+        val tenantPayments = state.payments.filter {
+            it.tenantId == tenant.id ||
+                (tenant.tenantUserId.isNotBlank() && it.tenantUserId == tenant.tenantUserId)
+        }
+        val totalPaid = tenantPayments.filter { it.verificationStatus == "verified" }.sumOf { it.amount }
         AlertDialog(
             onDismissRequest = { historyTargetTenant = null },
             title = { Text("${tenant.name} - ${strings.paymentHistory}") },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     if (tenantPayments.isEmpty()) {
                         Text(if (language == AppLanguage.BN) "কোনো পেমেন্ট রেকর্ড নেই।" else "No payment records yet.")
                     } else {
-                        tenantPayments.forEach { p ->
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column {
-                                    Text("${p.paymentDate} • ${p.method.uppercase()}", style = MaterialTheme.typography.bodySmall)
-                                    Text(p.transactionId, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    text = if (language == AppLanguage.BN) "মোট পরিশোধ (${FormatUtils.formatInt(tenantPayments.size, language)}টি):" else "Total Verified (${tenantPayments.size}):",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                                Text(
+                                    text = FormatUtils.formatBdt(totalPaid, language),
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                        tenantPayments.forEach { p ->
+                            val monthStr = FormatUtils.resolvePaymentBillingMonth(p, state.bills)
+                            val monthLabel = FormatUtils.formatBillingMonthLabel(monthStr, language)
+                            val methodLabel = FormatUtils.formatPaymentMethodLabel(p.method, language)
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        text = if (language == AppLanguage.BN) "ভাড়ার মাস: $monthLabel" else "Rent Month: $monthLabel",
+                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
                                 }
-                                Column(horizontalAlignment = Alignment.End) {
-                                    Text(FormatUtils.formatBdt(p.amount, language), style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
-                                    StatusBadge(p.verificationStatus)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "${p.buildingName.ifBlank { tenant.buildingName }} • ${p.flatNumber.ifBlank { tenant.flatNumber }}",
+                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+                                        )
+                                        Text(
+                                            text = "$methodLabel • ${FormatUtils.toLocalizedDigits(p.paymentDate, language)}",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                        if (p.targetBankAccountName.isNotBlank()) {
+                                            Text(
+                                                text = p.targetBankAccountName,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        Text(
+                                            text = "Tx: ${p.transactionId}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            FormatUtils.formatBdt(p.amount, language),
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        StatusBadge(p.verificationStatus)
+                                    }
                                 }
                             }
                             HorizontalDivider()

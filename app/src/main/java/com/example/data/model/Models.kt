@@ -143,6 +143,8 @@ data class PaymentRecord(
     val notes: String = "",
     val verifiedBy: String = "",
     val receiptId: String = "",
+    val billingMonth: String = "",
+    val monthKey: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )

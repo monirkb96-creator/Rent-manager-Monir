@@ -485,6 +485,8 @@ fun AdminNavHost(
     onSignOut: () -> Unit,
     onMarkNotificationRead: (String) -> Unit = {},
     onMarkAllNotificationsRead: () -> Unit = {},
+    onCleanupOrphanedRecords: () -> Unit = {},
+    onResetAllTransactionsAndBills: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     NavHost(
@@ -508,7 +510,8 @@ fun AdminNavHost(
                     navController.navigateSingleTopTab(AdminDestination.Transactions.route)
                 },
                 onMarkNotificationRead = onMarkNotificationRead,
-                onMarkAllNotificationsRead = onMarkAllNotificationsRead
+                onMarkAllNotificationsRead = onMarkAllNotificationsRead,
+                onCleanupOrphanedRecords = onCleanupOrphanedRecords
             )
         }
         composable(route = AdminDestination.Buildings.route) {
@@ -548,7 +551,9 @@ fun AdminNavHost(
                 onDeleteBankTx = onDeleteBankTx,
                 onDeleteCashTx = onDeleteCashTx,
                 onDeleteExpense = onDeleteExpense,
-                onDeleteReceipt = onDeleteReceipt
+                onDeleteReceipt = onDeleteReceipt,
+                onCleanupOrphanedRecords = onCleanupOrphanedRecords,
+                onResetAllTransactionsAndBills = onResetAllTransactionsAndBills
             )
         }
         composable(route = AdminDestination.Settings.route) {
@@ -558,6 +563,7 @@ fun AdminNavHost(
                 onLanguageChange = onLanguageChange,
                 onSaveSettings = onSaveSettings,
                 onBuildBackupJson = onBuildBackupJson,
+                onResetAllTransactionsAndBills = onResetAllTransactionsAndBills,
                 onSignOut = onSignOut
             )
         }

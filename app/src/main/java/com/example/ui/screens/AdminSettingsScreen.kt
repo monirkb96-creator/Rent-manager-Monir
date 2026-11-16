@@ -19,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Payment
@@ -67,6 +68,7 @@ fun AdminSettingsScreen(
     onLanguageChange: (AppLanguage) -> Unit,
     onSaveSettings: (AppSettings) -> Unit,
     onBuildBackupJson: () -> String,
+    onResetAllTransactionsAndBills: () -> Unit = {},
     onSignOut: () -> Unit
 ) {
     val strings = LocalStrings.current
@@ -83,6 +85,7 @@ fun AdminSettingsScreen(
     var carryForward by remember(state.settings) { mutableStateOf(state.settings.carryForwardEnabled) }
 
     var showAuditLogsDialog by remember { mutableStateOf(false) }
+    var showResetConfirmDialog by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
@@ -268,6 +271,19 @@ fun AdminSettingsScreen(
                         Spacer(Modifier.width(8.dp))
                         Text("${strings.auditLogs} (${state.auditLogs.size})")
                     }
+                    OutlinedButton(
+                        onClick = { showResetConfirmDialog = true },
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.fillMaxWidth().testTag("settings_reset_all_tx_btn")
+                    ) {
+                        Icon(Icons.Filled.DeleteSweep, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (language == AppLanguage.BN) "সব লেনদেন ও বকেয়া রিসেট করুন (৳০)"
+                            else "Reset All Transactions & Bills (Zero)"
+                        )
+                    }
                 }
             }
         }
@@ -311,6 +327,42 @@ fun AdminSettingsScreen(
                 }
             },
             confirmButton = { TextButton(onClick = { showAuditLogsDialog = false }) { Text(strings.close) } }
+        )
+    }
+
+    if (showResetConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirmDialog = false },
+            title = {
+                Text(if (language == AppLanguage.BN) "সব লেনদেন ও বকেয়া রিসেট করবেন?" else "Reset All Transactions & Bills?")
+            },
+            text = {
+                Text(
+                    if (language == AppLanguage.BN) {
+                        "সব পেমেন্ট, রসিদ, মাসিক বিল, ক্যাশ ও ব্যাংক লেনদেন এবং খরচ মুছে যাবে ও ড্যাশবোর্ডের হিসাব ৳০ হয়ে যাবে। আপনার ভবন ও ফ্ল্যাটগুলো ঠিক থাকবে।"
+                    } else {
+                        "All payments, receipts, monthly bills, cash/bank transactions, and expenses will be cleared so totals reset to zero. Your buildings and flats remain intact."
+                    }
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showResetConfirmDialog = false
+                        onResetAllTransactionsAndBills()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    modifier = Modifier.testTag("settings_confirm_reset_all_btn")
+                ) {
+                    Text(if (language == AppLanguage.BN) "হ্যাঁ, রিসেট করুন (৳০)" else "Yes, Reset (Zero)")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirmDialog = false }) { Text(strings.cancel) }
+            }
         )
     }
 }

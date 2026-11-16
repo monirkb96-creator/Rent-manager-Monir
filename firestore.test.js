@@ -420,6 +420,11 @@ test("Tenant can initialize missing current-month bill matching assigned flat an
     })
   );
 
+  // Tenant CAN check missing bill via .get() before initializing it
+  await assertSucceeds(
+    rahimDb.collection("monthly_bills").doc("flat_g2_2026-11").get()
+  );
+
   // Tenant CAN initialize valid bill matching assigned flat
   await assertSucceeds(
     rahimDb.collection("monthly_bills").doc("flat_g2_2026-11").set({
@@ -635,4 +640,54 @@ test("Tenant can submit hand-to-hand cash payment with proof photo and notify Ow
   await assertSucceeds(batch.commit());
 });
 
+test("Admin can safely check existence of missing documents while tenant is denied", async () => {
+  await seedCoreData();
+  const ownerDb = adminContext().firestore();
+  const rahimDb = tenantContext().firestore();
+
+  const missingFlat = await assertSucceeds(ownerDb.collection("flats").doc("nonexistent_flat_id").get());
+  const missingRcp = await assertSucceeds(ownerDb.collection("receipts").doc("nonexistent_rcp_id").get());
+  const missingPay = await assertSucceeds(ownerDb.collection("payments").doc("nonexistent_pay_id").get());
+  if (missingFlat.exists || missingRcp.exists || missingPay.exists) {
+    throw new Error("Expected nonexistent docs not to exist");
+  }
+
+  await assertFails(rahimDb.collection("flats").doc("nonexistent_flat_id").get());
+  await assertFails(rahimDb.collection("receipts").doc("nonexistent_rcp_id").get());
+});
+
+test("Payment supports billingMonth and monthKey fields", async () => {
+  await seedCoreData();
+  const rahimDb = tenantContext().firestore();
+  const now = safePastDate();
+
+  await assertSucceeds(
+    rahimDb.collection("payments").doc("pay_with_month_1").set({
+      ownerId: ADMIN_UID,
+      billId: "flat_2a_2026-11",
+      buildingId: "bldg_1",
+      buildingName: "Green View Tower",
+      flatId: "flat_2a",
+      flatNumber: "2A",
+      tenantId: "tenant_1",
+      tenantUserId: TENANT_UID,
+      tenantEmail: TENANT_EMAIL,
+      tenantName: "Abdur Rahim",
+      amount: 10000,
+      method: "bank_transfer",
+      transactionId: "TXMONTH01",
+      referenceNumber: "REFMONTH01",
+      billingMonth: "11-2026",
+      monthKey: "2026-11",
+      gatewayStatus: "pending",
+      verificationStatus: "pending",
+      paymentDate: "16-11-2026",
+      notes: "November rent",
+      verifiedBy: "",
+      receiptId: "",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+});
 

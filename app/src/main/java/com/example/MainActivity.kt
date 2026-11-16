@@ -332,6 +332,8 @@ private fun AdminShell(
                     onSignOut = onSignOut,
                     onMarkNotificationRead = viewModel::markNotificationRead,
                     onMarkAllNotificationsRead = viewModel::markAllNotificationsRead,
+                    onCleanupOrphanedRecords = viewModel::cleanupOrphanedRecords,
+                    onResetAllTransactionsAndBills = viewModel::resetAllTransactionsAndBills,
                     modifier = Modifier.weight(1f)
                 )
             }

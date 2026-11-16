@@ -78,6 +78,32 @@ data class AdminDataSnapshot(
         get() = expenses.filter { it.date.endsWith(currentBillingMonth) }.sumOf { it.amount }
     val pendingPayments: List<PaymentRecord>
         get() = payments.filter { it.verificationStatus == "pending" }
+    private val activeBuildingIdsSet: Set<String>
+        get() = buildings.map { it.id }.toSet()
+    private val activeFlatIdsSet: Set<String>
+        get() = flats.filter { it.buildingId in activeBuildingIdsSet }.map { it.id }.toSet()
+    val orphanedFlatsCount: Int
+        get() = flats.count { it.buildingId.isBlank() || it.buildingId !in activeBuildingIdsSet }
+    val orphanedBills: List<MonthlyBill>
+        get() = bills.filter { it.buildingId !in activeBuildingIdsSet || it.flatId !in activeFlatIdsSet }
+    val orphanedBillsCount: Int
+        get() = orphanedBills.size
+    val orphanedPaymentsCount: Int
+        get() = payments.count { it.buildingId !in activeBuildingIdsSet || it.flatId !in activeFlatIdsSet }
+    val orphanedRecordsCount: Int
+        get() {
+            val orphanedTenants = tenants.count {
+                (it.buildingId.isNotBlank() && it.buildingId !in activeBuildingIdsSet) ||
+                    (it.flatId.isNotBlank() && it.flatId !in activeFlatIdsSet)
+            }
+            val orphanedExpenses = expenses.count {
+                (it.buildingId.isNotBlank() && it.buildingId !in activeBuildingIdsSet) ||
+                    (it.flatId.isNotBlank() && it.flatId !in activeFlatIdsSet)
+            }
+            return orphanedFlatsCount + orphanedTenants + orphanedBillsCount + orphanedPaymentsCount + orphanedExpenses
+        }
+    val orphanedDueAmount: Double
+        get() = orphanedBills.sumOf { it.remainingDue }
 }
 
 class AdminViewModel(
@@ -166,9 +192,11 @@ class AdminViewModel(
                 .map { Triple(it.isLoading, it.bankAccounts, it.settings.bankAccountsJson) }
                 .distinctUntilChanged()
                 .collect { (loading, accounts, currentJson) ->
-                    if (!loading && accounts.isNotEmpty()) {
+                    if (!loading) {
                         val expected = BankInfoJson.encodeFromBankAccounts(accounts)
-                        if (expected != currentJson) {
+                        if (expected != currentJson &&
+                            (accounts.isNotEmpty() || (currentJson.isNotBlank() && currentJson != "[]"))
+                        ) {
                             repository.syncPublicBankAccountsToSettings(accounts)
                         }
                     }
@@ -344,12 +372,33 @@ class AdminViewModel(
         }
         val account = if (matchedTx != null) {
             snap.bankAccounts.firstOrNull { it.id == matchedTx.bankAccountId }
+        } else if (payment.targetBankAccountId.isNotBlank()) {
+            snap.bankAccounts.firstOrNull { it.id == payment.targetBankAccountId }
         } else {
             null
         }
-        runAction("Payment deleted") {
+        runAction("পেমেন্ট ও সংশ্লিষ্ট ব্যালেন্স মুছে ফেলা হয়েছে") {
             repository.deletePayment(payment, bill, account)
         }
+    }
+
+    fun cleanupOrphanedRecords() {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val res = repository.cleanupOrphanedRecords()
+            _isBusy.value = false
+            _actionMessage.value = res.fold(
+                onSuccess = { count ->
+                    if (count == 0) "কোনো পুরোনো অপ্রয়োজনীয় রেকর্ড পাওয়া যায়নি"
+                    else "মুছে ফেলা ভবনের ${count}টি পুরোনো বকেয়া ও পেমেন্ট রেকর্ড পরিষ্কার করা হয়েছে"
+                },
+                onFailure = { it.localizedMessage ?: "Cleanup failed" }
+            )
+        }
+    }
+
+    fun resetAllTransactionsAndBills() = runAction("সব লেনদেন, বকেয়া ও বিল রিসেট (৳০) সম্পন্ন হয়েছে") {
+        repository.resetAllTransactionsAndBills()
     }
 
     fun deleteReceipt(receipt: Receipt) =

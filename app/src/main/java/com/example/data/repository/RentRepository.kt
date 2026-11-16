@@ -28,6 +28,7 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.WriteBatch
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -304,11 +305,200 @@ class RentRepository(
         handleFirestoreError(it, OperationType.WRITE, "buildings")
     }
 
+    private data class BankBalanceDelta(
+        val receivedDelta: Double = 0.0,
+        val transferredDelta: Double = 0.0,
+        val expenseDelta: Double = 0.0,
+        val balanceDelta: Double = 0.0
+    )
+
+    private suspend fun commitChunked(ops: List<(WriteBatch) -> Unit>) {
+        if (ops.isEmpty()) return
+        for (chunk in ops.chunked(400)) {
+            val batch = db.batch()
+            chunk.forEach { it(batch) }
+            batch.commit().await()
+        }
+    }
+
+    private fun accumulateBankRollbackDeltas(
+        deletedBankTxs: List<DocumentSnapshot>,
+        deltas: MutableMap<String, BankBalanceDelta>
+    ) {
+        for (txDoc in deletedBankTxs) {
+            val bankId = txDoc.getString("bankAccountId").orEmpty()
+            if (bankId.isBlank()) continue
+            val txType = txDoc.getString("transactionType").orEmpty()
+            val amount = txDoc.getDouble("amount") ?: 0.0
+            if (amount <= 0.0) continue
+            val prev = deltas[bankId] ?: BankBalanceDelta()
+            deltas[bankId] = when (txType) {
+                "received" -> prev.copy(
+                    receivedDelta = prev.receivedDelta - amount,
+                    balanceDelta = prev.balanceDelta - amount
+                )
+                "transferred" -> prev.copy(
+                    transferredDelta = prev.transferredDelta - amount,
+                    balanceDelta = prev.balanceDelta + amount
+                )
+                "expense" -> prev.copy(
+                    expenseDelta = prev.expenseDelta - amount,
+                    balanceDelta = prev.balanceDelta + amount
+                )
+                else -> prev
+            }
+        }
+    }
+
+    private suspend fun appendBankRollbackOps(
+        deltas: Map<String, BankBalanceDelta>,
+        ops: MutableList<(WriteBatch) -> Unit>
+    ) {
+        for ((bankId, delta) in deltas) {
+            val bankRef = db.collection("bank_accounts").document(bankId)
+            val bankSnap = try { bankRef.get().await() } catch (_: Exception) { null }
+            if (bankSnap?.exists() == true) {
+                val curReceived = bankSnap.getDouble("moneyReceived") ?: 0.0
+                val curTransferred = bankSnap.getDouble("moneyTransferred") ?: 0.0
+                val curExpenses = bankSnap.getDouble("bankExpenses") ?: 0.0
+                val curBalance = bankSnap.getDouble("currentBalance") ?: 0.0
+                ops += { batch ->
+                    batch.update(
+                        bankRef,
+                        mapOf(
+                            "moneyReceived" to (curReceived + delta.receivedDelta).coerceAtLeast(0.0),
+                            "moneyTransferred" to (curTransferred + delta.transferredDelta).coerceAtLeast(0.0),
+                            "bankExpenses" to (curExpenses + delta.expenseDelta).coerceAtLeast(0.0),
+                            "currentBalance" to (curBalance + delta.balanceDelta),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun appendTenantUserUnlinkOps(
+        tenantUserIds: Collection<String>,
+        removedBuildingIds: Set<String>,
+        removedFlatIds: Set<String>,
+        ops: MutableList<(WriteBatch) -> Unit>
+    ) {
+        for (userId in tenantUserIds.filter { it.isNotBlank() }.distinct()) {
+            val userRef = db.collection("users").document(userId)
+            val userSnap = try { userRef.get().await() } catch (_: Exception) { null }
+            if (userSnap?.exists() == true) {
+                val userFlatId = userSnap.getString("flatId").orEmpty()
+                val userBuildingId = userSnap.getString("buildingId").orEmpty()
+                if (userFlatId in removedFlatIds || userBuildingId in removedBuildingIds) {
+                    ops += { batch ->
+                        batch.update(
+                            userRef,
+                            mapOf(
+                                "tenantId" to "",
+                                "buildingId" to "",
+                                "flatId" to "",
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     suspend fun deleteBuilding(building: Building): Result<Unit> = runCatching {
         val uid = requireUserId()
         require(building.id.isNotBlank())
-        db.collection("buildings").document(building.id).delete().await()
-        writeAuditLog(uid, "admin", "DELETE_BUILDING", "building", building.id, "Deleted building ${building.name}")
+        val ops = mutableListOf<(WriteBatch) -> Unit>()
+        val buildingRef = db.collection("buildings").document(building.id)
+        ops += { it.delete(buildingRef) }
+
+        val ownerFlats = db.collection("flats").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("buildingId") == building.id }
+        val flatIds = ownerFlats.map { it.id }.toSet()
+        ownerFlats.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val ownerTenants = db.collection("tenants").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("buildingId") == building.id || it.getString("flatId") in flatIds }
+        ownerTenants.forEach { doc -> ops += { it.delete(doc.reference) } }
+        appendTenantUserUnlinkOps(
+            tenantUserIds = ownerTenants.mapNotNull { it.getString("tenantUserId") },
+            removedBuildingIds = setOf(building.id),
+            removedFlatIds = flatIds,
+            ops = ops
+        )
+
+        val ownerBills = db.collection("monthly_bills").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("buildingId") == building.id || it.getString("flatId") in flatIds }
+        val billIds = ownerBills.map { it.id }.toSet()
+        ownerBills.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val ownerPayments = db.collection("payments").whereEqualTo("ownerId", uid).get().await().documents
+            .filter {
+                it.getString("buildingId") == building.id ||
+                    it.getString("flatId") in flatIds ||
+                    it.getString("billId") in billIds
+            }
+        val paymentIds = ownerPayments.map { it.id }.toSet()
+        val txRefs = ownerPayments.flatMap {
+            listOfNotNull(it.getString("transactionId"), it.getString("referenceNumber"))
+        }.filter { it.isNotBlank() }.toSet()
+        ownerPayments.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val ownerReceipts = db.collection("receipts").whereEqualTo("ownerId", uid).get().await().documents
+            .filter {
+                it.getString("buildingId") == building.id ||
+                    it.getString("flatId") in flatIds ||
+                    it.getString("billId") in billIds ||
+                    it.getString("paymentId") in paymentIds
+            }
+        ownerReceipts.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val ownerExpenses = db.collection("expenses").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("buildingId") == building.id || it.getString("flatId") in flatIds }
+        ownerExpenses.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val ownerCash = db.collection("cash_transactions").whereEqualTo("ownerId", uid).get().await().documents
+            .filter {
+                it.getString("buildingId") == building.id ||
+                    it.getString("flatId") in flatIds ||
+                    it.getString("referenceNumber").orEmpty().let { ref -> ref.isNotBlank() && ref in txRefs }
+            }
+        ownerCash.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val ownerBankTxs = db.collection("bank_transactions").whereEqualTo("ownerId", uid).get().await().documents
+            .filter {
+                it.getString("buildingId") == building.id ||
+                    it.getString("flatId") in flatIds ||
+                    it.getString("referenceNumber").orEmpty().let { ref -> ref.isNotBlank() && ref in txRefs }
+            }
+        ownerBankTxs.forEach { doc -> ops += { it.delete(doc.reference) } }
+        val bankDeltas = mutableMapOf<String, BankBalanceDelta>()
+        accumulateBankRollbackDeltas(ownerBankTxs, bankDeltas)
+        appendBankRollbackOps(bankDeltas, ops)
+
+        val ownerMessages = db.collection("messages").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("buildingId") == building.id || it.getString("flatId") in flatIds }
+        ownerMessages.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val ownerAnnouncements = db.collection("announcements").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("buildingId") == building.id }
+        ownerAnnouncements.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val ownerNotifications = db.collection("notifications").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("relatedId").orEmpty().let { rid -> rid in paymentIds || rid in billIds } }
+        ownerNotifications.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        commitChunked(ops)
+        writeAuditLog(
+            uid,
+            "admin",
+            "DELETE_BUILDING",
+            "building",
+            building.id,
+            "Cascade deleted building ${building.name} (${flatIds.size} flats, ${billIds.size} bills, ${paymentIds.size} payments)"
+        )
     }.onFailure {
         handleFirestoreError(it, OperationType.DELETE, "buildings/${building.id}")
     }
@@ -402,7 +592,7 @@ class RentRepository(
         val flatRef = db.collection("flats").document(targetFlat.id)
 
         // Check if a registered user already exists with this email to link tenantUserId immediately
-        val normalizedEmail = tenant.email.trim()
+        val normalizedEmail = tenant.email.trim().lowercase()
         var resolvedTenantUserId = tenant.tenantUserId
         if (resolvedTenantUserId.isBlank() && normalizedEmail.isNotBlank()) {
             val existingUsers = try {
@@ -625,8 +815,78 @@ class RentRepository(
     suspend fun deleteFlat(flat: Flat): Result<Unit> = runCatching {
         val uid = requireUserId()
         require(flat.id.isNotBlank())
-        db.collection("flats").document(flat.id).delete().await()
-        writeAuditLog(uid, "admin", "DELETE_FLAT", "flat", flat.id, "Deleted flat ${flat.buildingName} ${flat.flatNumber}")
+        val ops = mutableListOf<(WriteBatch) -> Unit>()
+        ops += { it.delete(db.collection("flats").document(flat.id)) }
+
+        val flatTenants = db.collection("tenants").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("flatId") == flat.id }
+        flatTenants.forEach { doc -> ops += { it.delete(doc.reference) } }
+        appendTenantUserUnlinkOps(
+            tenantUserIds = flatTenants.mapNotNull { it.getString("tenantUserId") },
+            removedBuildingIds = emptySet(),
+            removedFlatIds = setOf(flat.id),
+            ops = ops
+        )
+
+        val flatBills = db.collection("monthly_bills").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("flatId") == flat.id }
+        val billIds = flatBills.map { it.id }.toSet()
+        flatBills.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val flatPayments = db.collection("payments").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("flatId") == flat.id || it.getString("billId") in billIds }
+        val paymentIds = flatPayments.map { it.id }.toSet()
+        val txRefs = flatPayments.flatMap {
+            listOfNotNull(it.getString("transactionId"), it.getString("referenceNumber"))
+        }.filter { it.isNotBlank() }.toSet()
+        flatPayments.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val flatReceipts = db.collection("receipts").whereEqualTo("ownerId", uid).get().await().documents
+            .filter {
+                it.getString("flatId") == flat.id ||
+                    it.getString("billId") in billIds ||
+                    it.getString("paymentId") in paymentIds
+            }
+        flatReceipts.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val flatExpenses = db.collection("expenses").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("flatId") == flat.id }
+        flatExpenses.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val flatCash = db.collection("cash_transactions").whereEqualTo("ownerId", uid).get().await().documents
+            .filter {
+                it.getString("flatId") == flat.id ||
+                    it.getString("referenceNumber").orEmpty().let { ref -> ref.isNotBlank() && ref in txRefs }
+            }
+        flatCash.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val flatBankTxs = db.collection("bank_transactions").whereEqualTo("ownerId", uid).get().await().documents
+            .filter {
+                it.getString("flatId") == flat.id ||
+                    it.getString("referenceNumber").orEmpty().let { ref -> ref.isNotBlank() && ref in txRefs }
+            }
+        flatBankTxs.forEach { doc -> ops += { it.delete(doc.reference) } }
+        val bankDeltas = mutableMapOf<String, BankBalanceDelta>()
+        accumulateBankRollbackDeltas(flatBankTxs, bankDeltas)
+        appendBankRollbackOps(bankDeltas, ops)
+
+        val flatMessages = db.collection("messages").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("flatId") == flat.id }
+        flatMessages.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val flatNotifications = db.collection("notifications").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("relatedId").orEmpty().let { rid -> rid in paymentIds || rid in billIds } }
+        flatNotifications.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        commitChunked(ops)
+        writeAuditLog(
+            uid,
+            "admin",
+            "DELETE_FLAT",
+            "flat",
+            flat.id,
+            "Cascade deleted flat ${flat.buildingName} ${flat.flatNumber} (${billIds.size} bills, ${paymentIds.size} payments)"
+        )
     }.onFailure {
         handleFirestoreError(it, OperationType.DELETE, "flats/${flat.id}")
     }
@@ -637,8 +897,8 @@ class RentRepository(
         val batch = db.batch()
         if (tenant.flatId.isNotBlank() && tenant.status != "vacated") {
             val flatRef = db.collection("flats").document(tenant.flatId)
-            val flatSnap = flatRef.get().await()
-            if (flatSnap.exists()) {
+            val flatSnap = try { flatRef.get().await() } catch (_: Exception) { null }
+            if (flatSnap?.exists() == true) {
                 batch.update(
                     flatRef,
                     mapOf(
@@ -656,8 +916,8 @@ class RentRepository(
         }
         if (tenant.tenantUserId.isNotBlank()) {
             val userRef = db.collection("users").document(tenant.tenantUserId)
-            val userSnap = userRef.get().await()
-            if (userSnap.exists()) {
+            val userSnap = try { userRef.get().await() } catch (_: Exception) { null }
+            if (userSnap?.exists() == true) {
                 batch.update(
                     userRef,
                     mapOf(
@@ -787,8 +1047,25 @@ class RentRepository(
         val billRef = db.collection("monthly_bills").document(billId)
         val existing = billRef.get().await()
         if (existing.exists()) {
+            if (existing.getString("tenantUserId").orEmpty().isBlank()) {
+                try {
+                    billRef.update(
+                        mapOf(
+                            "tenantUserId" to uid,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                } catch (_: Exception) {
+                    // Best-effort link
+                }
+            }
             existing.toObject(MonthlyBill::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
-                ?.copy(id = billId)
+                ?.let { parsed ->
+                    parsed.copy(
+                        id = billId,
+                        tenantUserId = parsed.tenantUserId.ifBlank { uid }
+                    )
+                }
                 ?: MonthlyBill(
                     id = billId,
                     ownerId = flat.ownerId,
@@ -917,6 +1194,8 @@ class RentRepository(
                 "gatewayStatus" to "pending",
                 "verificationStatus" to "pending",
                 "paymentDate" to FormatUtils.todayDdMmYyyy(),
+                "billingMonth" to bill.billingMonth.ifBlank { FormatUtils.currentBillingMonth() },
+                "monthKey" to bill.monthKey.ifBlank { FormatUtils.currentMonthKey() },
                 "notes" to notes,
                 "verifiedBy" to "",
                 "receiptId" to "",
@@ -1204,9 +1483,13 @@ class RentRepository(
                 "method" to method,
                 "transactionId" to tranId,
                 "referenceNumber" to referenceNumber.ifBlank { tranId },
+                "targetBankAccountId" to (targetBankAccount?.id ?: ""),
+                "targetBankAccountName" to (targetBankAccount?.let { "${it.accountName} (${it.bankName})" } ?: ""),
                 "gatewayStatus" to "verified",
                 "verificationStatus" to "verified",
                 "paymentDate" to today,
+                "billingMonth" to bill.billingMonth.ifBlank { FormatUtils.currentBillingMonth() },
+                "monthKey" to bill.monthKey.ifBlank { FormatUtils.currentMonthKey() },
                 "notes" to notes,
                 "verifiedBy" to uid,
                 "receiptId" to receiptRef.id,
@@ -1712,87 +1995,303 @@ class RentRepository(
     ): Result<Unit> = runCatching {
         val uid = requireUserId()
         require(payment.id.isNotBlank())
-        val batch = db.batch()
-        batch.delete(db.collection("payments").document(payment.id))
+        val ops = mutableListOf<(WriteBatch) -> Unit>()
+        ops += { it.delete(db.collection("payments").document(payment.id)) }
 
+        val deletedReceiptIds = mutableSetOf<String>()
         if (payment.receiptId.isNotBlank()) {
             val rcpRef = db.collection("receipts").document(payment.receiptId)
-            if (rcpRef.get().await().exists()) {
-                batch.delete(rcpRef)
+            val rcpSnap = try { rcpRef.get().await() } catch (_: Exception) { null }
+            if (rcpSnap?.exists() == true) {
+                deletedReceiptIds.add(rcpRef.id)
+                ops += { it.delete(rcpRef) }
             }
         }
+        val extraReceipts = try {
+            db.collection("receipts").whereEqualTo("ownerId", uid).get().await().documents
+                .filter { it.getString("paymentId") == payment.id && it.id !in deletedReceiptIds }
+        } catch (_: Exception) { emptyList() }
+        extraReceipts.forEach { doc -> ops += { it.delete(doc.reference) } }
 
-        if (payment.verificationStatus == "verified" && bill != null && bill.id.isNotBlank()) {
-            val newPaid = (bill.amountPaid - payment.amount).coerceAtLeast(0.0)
-            val newRemaining = (bill.totalBill - newPaid).coerceAtLeast(0.0)
-            val newStatus = when {
-                newRemaining <= 0.0 && bill.totalBill > 0.0 -> "paid"
-                newPaid > 0.0 -> "partial"
-                else -> "unpaid"
-            }
-            val billRef = db.collection("monthly_bills").document(bill.id)
-            if (billRef.get().await().exists()) {
-                batch.update(
-                    billRef,
-                    mapOf(
-                        "amountPaid" to newPaid,
-                        "remainingDue" to newRemaining,
-                        "status" to newStatus,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                )
-            }
-            if (bill.flatId.isNotBlank()) {
-                val flatRef = db.collection("flats").document(bill.flatId)
-                if (flatRef.get().await().exists()) {
-                    batch.update(
-                        flatRef,
-                        mapOf(
-                            "amountPaid" to newPaid,
-                            "remainingDue" to newRemaining,
-                            "paymentStatus" to newStatus,
-                            "updatedAt" to FieldValue.serverTimestamp()
+        val relatedNotifs = try {
+            db.collection("notifications").whereEqualTo("ownerId", uid).get().await().documents
+                .filter { it.getString("relatedId") == payment.id }
+        } catch (_: Exception) { emptyList() }
+        relatedNotifs.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val resolvedBill = bill ?: if (payment.billId.isNotBlank()) {
+            try {
+                val snap = db.collection("monthly_bills").document(payment.billId).get().await()
+                if (snap.exists()) {
+                    snap.toObject(MonthlyBill::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                } else null
+            } catch (_: Exception) { null }
+        } else null
+
+        if (payment.verificationStatus == "verified") {
+            if (resolvedBill != null && resolvedBill.id.isNotBlank()) {
+                val newPaid = (resolvedBill.amountPaid - payment.amount).coerceAtLeast(0.0)
+                val newRemaining = (resolvedBill.totalBill - newPaid).coerceAtLeast(0.0)
+                val newStatus = when {
+                    newRemaining <= 0.0 && resolvedBill.totalBill > 0.0 -> "paid"
+                    newPaid > 0.0 -> "partial"
+                    else -> "unpaid"
+                }
+                val billRef = db.collection("monthly_bills").document(resolvedBill.id)
+                val billSnap = try { billRef.get().await() } catch (_: Exception) { null }
+                if (billSnap?.exists() == true) {
+                    ops += { batch ->
+                        batch.update(
+                            billRef,
+                            mapOf(
+                                "amountPaid" to newPaid,
+                                "remainingDue" to newRemaining,
+                                "status" to newStatus,
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            )
                         )
-                    )
+                    }
+                }
+                val targetFlatId = resolvedBill.flatId.ifBlank { payment.flatId }
+                if (targetFlatId.isNotBlank()) {
+                    val flatRef = db.collection("flats").document(targetFlatId)
+                    val flatSnap = try { flatRef.get().await() } catch (_: Exception) { null }
+                    if (flatSnap?.exists() == true) {
+                        ops += { batch ->
+                            batch.update(
+                                flatRef,
+                                mapOf(
+                                    "amountPaid" to newPaid,
+                                    "remainingDue" to newRemaining,
+                                    "paymentStatus" to newStatus,
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                )
+                            )
+                        }
+                    }
                 }
             }
+
             if (payment.method == "cash") {
                 val matchingCash = db.collection("cash_transactions")
                     .whereEqualTo("ownerId", uid)
                     .get()
                     .await()
                     .documents
-                    .firstOrNull { it.getString("referenceNumber") == payment.transactionId }
-                matchingCash?.let { batch.delete(it.reference) }
-            } else if (bankAccount != null && bankAccount.id.isNotBlank()) {
-                batch.update(
-                    db.collection("bank_accounts").document(bankAccount.id),
-                    mapOf(
-                        "moneyReceived" to (bankAccount.moneyReceived - payment.amount).coerceAtLeast(0.0),
-                        "currentBalance" to bankAccount.currentBalance - payment.amount,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                )
+                    .filter { doc ->
+                        val ref = doc.getString("referenceNumber").orEmpty()
+                        doc.getString("transactionType") == "cash_in" &&
+                            ((payment.transactionId.isNotBlank() && ref == payment.transactionId) ||
+                                (payment.referenceNumber.isNotBlank() && ref == payment.referenceNumber))
+                    }
+                matchingCash.forEach { doc -> ops += { it.delete(doc.reference) } }
+            } else {
                 val refMatch = payment.referenceNumber.ifBlank { payment.transactionId }
-                val matchingBank = db.collection("bank_transactions")
+                val matchingBankTxs = db.collection("bank_transactions")
                     .whereEqualTo("ownerId", uid)
                     .get()
                     .await()
                     .documents
-                    .firstOrNull {
-                        it.getString("bankAccountId") == bankAccount.id &&
-                            it.getString("transactionType") == "received" &&
-                            (it.getString("referenceNumber") == refMatch ||
-                                it.getString("referenceNumber") == payment.transactionId)
+                    .filter { doc ->
+                        val ref = doc.getString("referenceNumber").orEmpty()
+                        doc.getString("transactionType") == "received" &&
+                            ((refMatch.isNotBlank() && ref == refMatch) ||
+                                (payment.transactionId.isNotBlank() && ref == payment.transactionId))
                     }
-                matchingBank?.let { batch.delete(it.reference) }
+                matchingBankTxs.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+                val bankDeltas = mutableMapOf<String, BankBalanceDelta>()
+                if (matchingBankTxs.isNotEmpty()) {
+                    accumulateBankRollbackDeltas(matchingBankTxs, bankDeltas)
+                } else {
+                    val fallbackBankId = bankAccount?.id?.takeIf { it.isNotBlank() } ?: payment.targetBankAccountId
+                    if (fallbackBankId.isNotBlank()) {
+                        bankDeltas[fallbackBankId] = BankBalanceDelta(
+                            receivedDelta = -payment.amount,
+                            balanceDelta = -payment.amount
+                        )
+                    }
+                }
+                appendBankRollbackOps(bankDeltas, ops)
             }
         }
 
-        batch.commit().await()
+        commitChunked(ops)
         writeAuditLog(uid, "admin", "DELETE_PAYMENT", "payment", payment.id, "Deleted payment ${payment.transactionId}")
     }.onFailure {
         handleFirestoreError(it, OperationType.DELETE, "payments/${payment.id}")
+    }
+
+    suspend fun cleanupOrphanedRecords(): Result<Int> = runCatching {
+        val uid = requireUserId()
+        val ops = mutableListOf<(WriteBatch) -> Unit>()
+
+        val activeBuildingIds = db.collection("buildings").whereEqualTo("ownerId", uid).get().await()
+            .documents.map { it.id }.toSet()
+
+        val allFlats = db.collection("flats").whereEqualTo("ownerId", uid).get().await().documents
+        val orphanFlats = allFlats.filter { it.getString("buildingId").orEmpty() !in activeBuildingIds }
+        val orphanFlatIds = orphanFlats.map { it.id }.toSet()
+        val activeFlatIds = allFlats.filter { it.id !in orphanFlatIds }.map { it.id }.toSet()
+        orphanFlats.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val allTenants = db.collection("tenants").whereEqualTo("ownerId", uid).get().await().documents
+        val orphanTenants = allTenants.filter { doc ->
+            val bId = doc.getString("buildingId").orEmpty()
+            val fId = doc.getString("flatId").orEmpty()
+            (bId.isNotBlank() && bId !in activeBuildingIds) || (fId.isNotBlank() && fId !in activeFlatIds)
+        }
+        orphanTenants.forEach { doc -> ops += { it.delete(doc.reference) } }
+        appendTenantUserUnlinkOps(
+            tenantUserIds = orphanTenants.mapNotNull { it.getString("tenantUserId") },
+            removedBuildingIds = allFlats.mapNotNull { it.getString("buildingId") }.toSet() - activeBuildingIds,
+            removedFlatIds = orphanFlatIds,
+            ops = ops
+        )
+
+        val allBills = db.collection("monthly_bills").whereEqualTo("ownerId", uid).get().await().documents
+        val orphanBills = allBills.filter { doc ->
+            doc.getString("buildingId").orEmpty() !in activeBuildingIds ||
+                doc.getString("flatId").orEmpty() !in activeFlatIds
+        }
+        val orphanBillIds = orphanBills.map { it.id }.toSet()
+        orphanBills.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val allPayments = db.collection("payments").whereEqualTo("ownerId", uid).get().await().documents
+        val orphanPayments = allPayments.filter { doc ->
+            doc.getString("buildingId").orEmpty() !in activeBuildingIds ||
+                doc.getString("flatId").orEmpty() !in activeFlatIds ||
+                doc.getString("billId").orEmpty() in orphanBillIds
+        }
+        val orphanPaymentIds = orphanPayments.map { it.id }.toSet()
+        val orphanTxRefs = orphanPayments.flatMap {
+            listOfNotNull(it.getString("transactionId"), it.getString("referenceNumber"))
+        }.filter { it.isNotBlank() }.toSet()
+        orphanPayments.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val allReceipts = db.collection("receipts").whereEqualTo("ownerId", uid).get().await().documents
+        val orphanReceipts = allReceipts.filter { doc ->
+            val bId = doc.getString("buildingId").orEmpty()
+            val fId = doc.getString("flatId").orEmpty()
+            (bId.isNotBlank() && bId !in activeBuildingIds) ||
+                (fId.isNotBlank() && fId !in activeFlatIds) ||
+                doc.getString("billId").orEmpty() in orphanBillIds ||
+                doc.getString("paymentId").orEmpty() in orphanPaymentIds
+        }
+        orphanReceipts.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val allExpenses = db.collection("expenses").whereEqualTo("ownerId", uid).get().await().documents
+        val orphanExpenses = allExpenses.filter { doc ->
+            val bId = doc.getString("buildingId").orEmpty()
+            val fId = doc.getString("flatId").orEmpty()
+            (bId.isNotBlank() && bId !in activeBuildingIds) || (fId.isNotBlank() && fId !in activeFlatIds)
+        }
+        orphanExpenses.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val allCash = db.collection("cash_transactions").whereEqualTo("ownerId", uid).get().await().documents
+        val orphanCash = allCash.filter { doc ->
+            val bId = doc.getString("buildingId").orEmpty()
+            val fId = doc.getString("flatId").orEmpty()
+            val ref = doc.getString("referenceNumber").orEmpty()
+            (bId.isNotBlank() && bId !in activeBuildingIds) ||
+                (fId.isNotBlank() && fId !in activeFlatIds) ||
+                (ref.isNotBlank() && ref in orphanTxRefs)
+        }
+        orphanCash.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val allBankTxs = db.collection("bank_transactions").whereEqualTo("ownerId", uid).get().await().documents
+        val orphanBankTxs = allBankTxs.filter { doc ->
+            val bId = doc.getString("buildingId").orEmpty()
+            val fId = doc.getString("flatId").orEmpty()
+            val ref = doc.getString("referenceNumber").orEmpty()
+            (bId.isNotBlank() && bId !in activeBuildingIds) ||
+                (fId.isNotBlank() && fId !in activeFlatIds) ||
+                (ref.isNotBlank() && ref in orphanTxRefs)
+        }
+        orphanBankTxs.forEach { doc -> ops += { it.delete(doc.reference) } }
+        val bankDeltas = mutableMapOf<String, BankBalanceDelta>()
+        accumulateBankRollbackDeltas(orphanBankTxs, bankDeltas)
+        appendBankRollbackOps(bankDeltas, ops)
+
+        val orphanNotifs = db.collection("notifications").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { doc ->
+                val rel = doc.getString("relatedId").orEmpty()
+                rel.isNotBlank() && (rel in orphanPaymentIds || rel in orphanBillIds)
+            }
+        orphanNotifs.forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        val removedCount = orphanFlats.size + orphanTenants.size + orphanBills.size +
+            orphanPayments.size + orphanReceipts.size + orphanExpenses.size +
+            orphanCash.size + orphanBankTxs.size
+        commitChunked(ops)
+        if (removedCount > 0) {
+            writeAuditLog(uid, "admin", "CLEANUP_ORPHANS", "system", uid, "Cleaned $removedCount orphaned records")
+        }
+        removedCount
+    }.onFailure {
+        handleFirestoreError(it, OperationType.DELETE, "cleanup_orphans")
+    }
+
+    suspend fun resetAllTransactionsAndBills(): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        val ops = mutableListOf<(WriteBatch) -> Unit>()
+
+        val collectionsToClear = listOf(
+            "payments",
+            "receipts",
+            "monthly_bills",
+            "cash_transactions",
+            "bank_transactions",
+            "expenses"
+        )
+        for (col in collectionsToClear) {
+            db.collection(col).whereEqualTo("ownerId", uid).get().await().documents.forEach { doc ->
+                ops += { it.delete(doc.reference) }
+            }
+        }
+
+        val notifTypes = setOf("payment_submitted", "payment_verified", "payment_rejected", "bill_generated")
+        db.collection("notifications").whereEqualTo("ownerId", uid).get().await().documents
+            .filter { it.getString("type").orEmpty() in notifTypes }
+            .forEach { doc -> ops += { it.delete(doc.reference) } }
+
+        db.collection("flats").whereEqualTo("ownerId", uid).get().await().documents.forEach { flatDoc ->
+            val totalBill = flatDoc.getDouble("totalMonthlyBill") ?: 0.0
+            val isOccupied = flatDoc.getBoolean("isOccupied") ?: false
+            val newStatus = if (isOccupied) "unpaid" else "vacant"
+            ops += { batch ->
+                batch.update(
+                    flatDoc.reference,
+                    mapOf(
+                        "amountPaid" to 0.0,
+                        "remainingDue" to totalBill,
+                        "paymentStatus" to newStatus,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+            }
+        }
+
+        db.collection("bank_accounts").whereEqualTo("ownerId", uid).get().await().documents.forEach { bankDoc ->
+            val opening = bankDoc.getDouble("openingBalance") ?: 0.0
+            ops += { batch ->
+                batch.update(
+                    bankDoc.reference,
+                    mapOf(
+                        "moneyReceived" to 0.0,
+                        "moneyTransferred" to 0.0,
+                        "bankExpenses" to 0.0,
+                        "currentBalance" to opening,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+            }
+        }
+
+        commitChunked(ops)
+        writeAuditLog(uid, "admin", "RESET_TRANSACTIONS", "system", uid, "Reset all bills, payments, cash, bank transactions, and expenses to zero")
+    }.onFailure {
+        handleFirestoreError(it, OperationType.DELETE, "reset_transactions")
     }
 
     suspend fun deleteReceipt(receipt: Receipt): Result<Unit> = runCatching {
