@@ -316,6 +316,13 @@ private fun AdminShell(
                     onSendPersonalMessage = viewModel::sendPersonalMessage,
                     onSendAnnouncement = viewModel::sendAnnouncement,
                     onRecordDirectPayment = viewModel::recordDirectPayment,
+                    onRecordDirectPaymentWithPayer = { bill, flat, amt, method, ref, acc, notes, payerName ->
+                        if (bill != null) {
+                            viewModel.recordDirectPayment(bill, amt, method, ref, acc, notes, payerName)
+                        } else if (flat != null) {
+                            viewModel.recordDirectPaymentForFlat(flat, amt, method, ref, acc, notes, payerName)
+                        }
+                    },
                     onAddBankAccount = viewModel::addBankAccount,
                     onRecordBankTx = viewModel::recordBankTx,
                     onRecordBankTxWithFlat = viewModel::recordBankTxWithFlat,

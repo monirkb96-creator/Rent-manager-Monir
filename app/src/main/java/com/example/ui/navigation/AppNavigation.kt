@@ -467,6 +467,9 @@ fun AdminNavHost(
     onSendPersonalMessage: (Tenant, String, String, String) -> Unit,
     onSendAnnouncement: (String, String, String, Building?) -> Unit,
     onRecordDirectPayment: (MonthlyBill, Double, String, String, BankAccount?, String) -> Unit,
+    onRecordDirectPaymentWithPayer: (MonthlyBill?, Flat?, Double, String, String, BankAccount?, String, String) -> Unit = { bill, _, amt, m, ref, bank, n, _ ->
+        if (bill != null) onRecordDirectPayment(bill, amt, m, ref, bank, n)
+    },
     onAddBankAccount: (BankAccount) -> Unit,
     onRecordBankTx: (BankAccount, Double, String, String, String) -> Unit,
     onRecordBankTxWithFlat: (BankAccount, Double, String, String, String, String, String) -> Unit = { acc, amt, type, desc, ref, _, _ ->
@@ -542,6 +545,7 @@ fun AdminNavHost(
                 onVerifyPayment = onVerifyPayment,
                 onRejectPayment = onRejectPayment,
                 onRecordDirectPayment = onRecordDirectPayment,
+                onRecordDirectPaymentWithPayer = onRecordDirectPaymentWithPayer,
                 onAddBankAccount = onAddBankAccount,
                 onRecordBankTx = onRecordBankTx,
                 onRecordBankTxWithFlat = onRecordBankTxWithFlat,

@@ -302,9 +302,22 @@ class AdminViewModel(
         method: String,
         reference: String,
         bankAccount: BankAccount?,
-        notes: String
-    ) = runAction("Payment recorded & receipt issued") {
-        repository.recordAdminDirectPayment(bill, amount, method, reference, bankAccount, notes)
+        notes: String,
+        customPayerName: String = ""
+    ) = runAction("ভাড়া আদায় ও রসিদ রেকর্ড সম্পন্ন হয়েছে") {
+        repository.recordAdminDirectPayment(bill, amount, method, reference, bankAccount, notes, customPayerName)
+    }
+
+    fun recordDirectPaymentForFlat(
+        flat: Flat,
+        amount: Double,
+        method: String,
+        reference: String,
+        bankAccount: BankAccount?,
+        notes: String,
+        customPayerName: String = ""
+    ) = runAction("ভাড়া আদায় ও রসিদ রেকর্ড সম্পন্ন হয়েছে") {
+        repository.recordAdminDirectPaymentForFlat(flat, amount, method, reference, bankAccount, notes, customPayerName)
     }
 
     fun addBankAccount(account: BankAccount) = runAction("Bank account added") {

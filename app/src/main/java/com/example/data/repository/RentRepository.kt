@@ -1451,7 +1451,8 @@ class RentRepository(
         method: String,
         referenceNumber: String,
         targetBankAccount: BankAccount?,
-        notes: String
+        notes: String,
+        customPayerName: String = ""
     ): Result<String> = runCatching {
         val uid = requireUserId()
         require(amount > 0.0)
@@ -1464,6 +1465,7 @@ class RentRepository(
         val receiptRef = db.collection("receipts").document()
         val receiptNumber = "RCP-${System.currentTimeMillis().toString().takeLast(6)}"
         val today = FormatUtils.todayDdMmYyyy()
+        val resolvedTenantName = customPayerName.trim().ifBlank { bill.tenantName }
 
         val batch = db.batch()
         batch.set(
@@ -1478,7 +1480,7 @@ class RentRepository(
                 "tenantId" to bill.tenantId,
                 "tenantUserId" to bill.tenantUserId,
                 "tenantEmail" to bill.tenantEmail,
-                "tenantName" to bill.tenantName,
+                "tenantName" to resolvedTenantName,
                 "amount" to amount,
                 "method" to method,
                 "transactionId" to tranId,
@@ -1529,7 +1531,7 @@ class RentRepository(
                 "tenantId" to bill.tenantId,
                 "tenantUserId" to bill.tenantUserId,
                 "tenantEmail" to bill.tenantEmail,
-                "tenantName" to bill.tenantName,
+                "tenantName" to resolvedTenantName,
                 "paymentDate" to today,
                 "amountPaid" to amount,
                 "paymentMethod" to method,
@@ -1550,7 +1552,7 @@ class RentRepository(
                     "date" to today,
                     "amount" to amount,
                     "transactionType" to "cash_in",
-                    "description" to "Direct cash rent: ${bill.buildingName} ${bill.flatNumber}",
+                    "description" to "Direct cash rent ($resolvedTenantName): ${bill.buildingName} ${bill.flatNumber}",
                     "paymentMethod" to "cash",
                     "referenceNumber" to tranId,
                     "buildingId" to bill.buildingId,
@@ -1570,7 +1572,7 @@ class RentRepository(
                     "date" to today,
                     "amount" to amount,
                     "transactionType" to "received",
-                    "description" to "Rent ($method): ${bill.buildingName} ${bill.flatNumber}",
+                    "description" to "Rent ($method - $resolvedTenantName): ${bill.buildingName} ${bill.flatNumber}",
                     "paymentMethod" to method,
                     "referenceNumber" to referenceNumber.ifBlank { tranId },
                     "buildingId" to bill.buildingId,
@@ -1609,8 +1611,130 @@ class RentRepository(
         }
 
         batch.commit().await()
-        writeAuditLog(uid, "admin", "RECORD_PAYMENT", "payment", paymentId, "Recorded BDT $amount ($method) for ${bill.flatNumber}")
+        writeAuditLog(uid, "admin", "RECORD_PAYMENT", "payment", paymentId, "Recorded BDT $amount ($method) from $resolvedTenantName for ${bill.flatNumber}")
         receiptRef.id
+    }.onFailure {
+        handleFirestoreError(it, OperationType.WRITE, "payments")
+    }
+
+    suspend fun recordAdminDirectPaymentForFlat(
+        flat: Flat,
+        amount: Double,
+        method: String,
+        referenceNumber: String,
+        targetBankAccount: BankAccount?,
+        notes: String,
+        customPayerName: String = ""
+    ): Result<String> = runCatching {
+        val uid = requireUserId()
+        require(amount > 0.0)
+        val monthKey = FormatUtils.currentMonthKey()
+        val billingMonth = FormatUtils.currentBillingMonth()
+        val billId = "${flat.id}_$monthKey"
+        val billRef = db.collection("monthly_bills").document(billId)
+        val existing = billRef.get().await()
+        val resolvedTenantName = customPayerName.trim().ifBlank { flat.tenantName.ifBlank { "হাতে / সরাসরি প্রদানকারী" } }
+
+        val targetBill = if (existing.exists()) {
+            existing.toObject(MonthlyBill::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+                ?.copy(id = billId)
+                ?: MonthlyBill(
+                    id = billId,
+                    ownerId = uid,
+                    buildingId = flat.buildingId,
+                    buildingName = flat.buildingName,
+                    flatId = flat.id,
+                    flatNumber = flat.flatNumber,
+                    tenantId = flat.tenantId.ifBlank { flat.id },
+                    tenantUserId = flat.tenantUserId,
+                    tenantEmail = flat.tenantEmail,
+                    tenantName = resolvedTenantName,
+                    billingMonth = billingMonth,
+                    monthKey = monthKey,
+                    monthlyRent = flat.monthlyRent,
+                    serviceCharge = flat.serviceCharge,
+                    electricityBill = flat.electricityBill,
+                    waterBill = flat.waterBill,
+                    gasBill = flat.gasBill,
+                    otherCharges = flat.otherCharges,
+                    previousDueCarriedForward = 0.0,
+                    totalBill = flat.totalMonthlyBill,
+                    amountPaid = flat.amountPaid,
+                    remainingDue = (flat.totalMonthlyBill - flat.amountPaid).coerceAtLeast(0.0),
+                    status = "unpaid",
+                    dueDate = "10-$billingMonth"
+                )
+        } else {
+            val totalBill = flat.totalMonthlyBill.takeIf { it > 0.0 } ?: (
+                flat.monthlyRent + flat.serviceCharge + flat.electricityBill +
+                    flat.waterBill + flat.gasBill + flat.otherCharges
+                )
+            val dueDate = "10-$billingMonth"
+            billRef.set(
+                mapOf(
+                    "ownerId" to uid,
+                    "buildingId" to flat.buildingId,
+                    "buildingName" to flat.buildingName,
+                    "flatId" to flat.id,
+                    "flatNumber" to flat.flatNumber,
+                    "tenantId" to flat.tenantId.ifBlank { flat.id },
+                    "tenantUserId" to flat.tenantUserId,
+                    "tenantEmail" to flat.tenantEmail,
+                    "tenantName" to resolvedTenantName,
+                    "billingMonth" to billingMonth,
+                    "monthKey" to monthKey,
+                    "monthlyRent" to flat.monthlyRent,
+                    "serviceCharge" to flat.serviceCharge,
+                    "electricityBill" to flat.electricityBill,
+                    "waterBill" to flat.waterBill,
+                    "gasBill" to flat.gasBill,
+                    "otherCharges" to flat.otherCharges,
+                    "previousDueCarriedForward" to 0.0,
+                    "totalBill" to totalBill,
+                    "amountPaid" to 0.0,
+                    "remainingDue" to totalBill,
+                    "status" to "unpaid",
+                    "dueDate" to dueDate,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            MonthlyBill(
+                id = billId,
+                ownerId = uid,
+                buildingId = flat.buildingId,
+                buildingName = flat.buildingName,
+                flatId = flat.id,
+                flatNumber = flat.flatNumber,
+                tenantId = flat.tenantId.ifBlank { flat.id },
+                tenantUserId = flat.tenantUserId,
+                tenantEmail = flat.tenantEmail,
+                tenantName = resolvedTenantName,
+                billingMonth = billingMonth,
+                monthKey = monthKey,
+                monthlyRent = flat.monthlyRent,
+                serviceCharge = flat.serviceCharge,
+                electricityBill = flat.electricityBill,
+                waterBill = flat.waterBill,
+                gasBill = flat.gasBill,
+                otherCharges = flat.otherCharges,
+                previousDueCarriedForward = 0.0,
+                totalBill = totalBill,
+                amountPaid = 0.0,
+                remainingDue = totalBill,
+                status = "unpaid",
+                dueDate = dueDate
+            )
+        }
+        recordAdminDirectPayment(
+            bill = targetBill,
+            amount = amount,
+            method = method,
+            referenceNumber = referenceNumber,
+            targetBankAccount = targetBankAccount,
+            notes = notes,
+            customPayerName = resolvedTenantName
+        ).getOrThrow()
     }.onFailure {
         handleFirestoreError(it, OperationType.WRITE, "payments")
     }

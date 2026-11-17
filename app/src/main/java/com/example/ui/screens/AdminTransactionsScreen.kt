@@ -91,6 +91,9 @@ fun AdminTransactionsScreen(
     onVerifyPayment: (PaymentRecord, BankAccount?) -> Unit,
     onRejectPayment: (PaymentRecord, String) -> Unit,
     onRecordDirectPayment: (MonthlyBill, Double, String, String, BankAccount?, String) -> Unit,
+    onRecordDirectPaymentWithPayer: (MonthlyBill?, Flat?, Double, String, String, BankAccount?, String, String) -> Unit = { bill, _, amt, m, ref, bank, n, _ ->
+        if (bill != null) onRecordDirectPayment(bill, amt, m, ref, bank, n)
+    },
     onAddBankAccount: (BankAccount) -> Unit,
     onRecordBankTx: (BankAccount, Double, String, String, String) -> Unit,
     onRecordBankTxWithFlat: (BankAccount, Double, String, String, String, String, String) -> Unit = { acc, amt, type, desc, ref, _, _ ->
@@ -194,14 +197,26 @@ fun AdminTransactionsScreen(
                     }
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val canRecordDirect = state.bills.isNotEmpty() || state.flats.isNotEmpty()
                             Button(
                                 onClick = { showDirectPaymentDialog = true },
-                                enabled = state.bills.any { it.remainingDue > 0.0 },
+                                enabled = canRecordDirect,
                                 modifier = Modifier.fillMaxWidth().testTag("record_direct_payment_btn")
                             ) {
                                 Icon(Icons.Filled.Add, contentDescription = null)
                                 Spacer(Modifier.width(8.dp))
                                 Text(if (language == AppLanguage.BN) "সরাসরি ভাড়া আদায় রেকর্ড করুন" else "Record Direct Cash / Bank Payment")
+                            }
+                            if (!canRecordDirect) {
+                                Text(
+                                    text = if (language == AppLanguage.BN) {
+                                        "সরাসরি ভাড়া আদায় করতে আগে 'ভবনসমূহ' ট্যাব থেকে অন্তত একটি ফ্ল্যাট যোগ করুন।"
+                                    } else {
+                                        "Add at least one building and flat first to record direct rent payments."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                             if (state.payments.isNotEmpty() || state.bills.isNotEmpty() || state.bankTransactions.isNotEmpty() || state.cashTransactions.isNotEmpty() || state.expenses.isNotEmpty()) {
                                 OutlinedButton(
@@ -636,12 +651,13 @@ fun AdminTransactionsScreen(
 
     if (showDirectPaymentDialog) {
         DirectPaymentDialog(
-            bills = state.bills.filter { it.remainingDue > 0.0 },
+            bills = state.bills,
+            flats = state.flats,
             bankAccounts = state.bankAccounts,
             onDismiss = { showDirectPaymentDialog = false },
-            onSave = { bill, amt, method, ref, acc, notes ->
+            onSave = { bill, flat, amt, method, ref, acc, notes, payerName ->
                 showDirectPaymentDialog = false
-                onRecordDirectPayment(bill, amt, method, ref, acc, notes)
+                onRecordDirectPaymentWithPayer(bill, flat, amt, method, ref, acc, notes, payerName)
             }
         )
     }
@@ -904,14 +920,43 @@ private fun LedgerRowCard(
 @Composable
 private fun DirectPaymentDialog(
     bills: List<MonthlyBill>,
+    flats: List<Flat>,
     bankAccounts: List<BankAccount>,
     onDismiss: () -> Unit,
-    onSave: (MonthlyBill, Double, String, String, BankAccount?, String) -> Unit
+    onSave: (MonthlyBill?, Flat?, Double, String, String, BankAccount?, String, String) -> Unit
 ) {
     val strings = LocalStrings.current
     val language = LocalLanguage.current
-    var selectedBill by remember { mutableStateOf(bills.firstOrNull()) }
-    var amount by remember { mutableStateOf(selectedBill?.remainingDue?.toInt()?.toString() ?: "") }
+    val unpaidBills = remember(bills) { bills.filter { it.remainingDue > 0.0 } }
+    val orderedBills = remember(bills) { unpaidBills + bills.filter { it.remainingDue <= 0.0 } }
+    val selectableFlats = remember(flats) {
+        flats.sortedWith(compareByDescending<Flat> { it.isOccupied }.thenBy { it.buildingName }.thenBy { it.flatNumber })
+    }
+    var useFlatPicker by remember(unpaidBills, selectableFlats) {
+        mutableStateOf(unpaidBills.isEmpty() && selectableFlats.isNotEmpty())
+    }
+    var selectedBill by remember { mutableStateOf(orderedBills.firstOrNull()) }
+    var selectedFlat by remember { mutableStateOf(selectableFlats.firstOrNull()) }
+    var payerName by remember {
+        mutableStateOf(
+            if (unpaidBills.isEmpty() && selectableFlats.isNotEmpty()) {
+                selectableFlats.firstOrNull()?.tenantName.orEmpty()
+            } else {
+                orderedBills.firstOrNull()?.tenantName.orEmpty()
+            }
+        )
+    }
+    var amount by remember {
+        mutableStateOf(
+            if (unpaidBills.isNotEmpty()) {
+                unpaidBills.first().remainingDue.toInt().toString()
+            } else if (selectableFlats.isNotEmpty()) {
+                selectableFlats.first().totalMonthlyBill.takeIf { it > 0.0 }?.toInt()?.toString() ?: ""
+            } else {
+                orderedBills.firstOrNull()?.totalBill?.takeIf { it > 0.0 }?.toInt()?.toString() ?: ""
+            }
+        )
+    }
     var method by remember { mutableStateOf("cash") }
     var ref by remember { mutableStateOf("") }
     var selectedBank by remember { mutableStateOf(bankAccounts.firstOrNull()) }
@@ -934,16 +979,110 @@ private fun DirectPaymentDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                bills.take(8).forEach { b ->
-                    FilterChip(
-                        selected = selectedBill?.id == b.id,
-                        onClick = {
-                            selectedBill = b
-                            amount = b.remainingDue.toInt().toString()
-                        },
-                        label = { Text("${b.flatNumber} (${b.billingMonth}) - Due ${b.remainingDue.toInt()}") }
-                    )
+                if (orderedBills.isNotEmpty() && selectableFlats.isNotEmpty()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = !useFlatPicker,
+                            onClick = {
+                                useFlatPicker = false
+                                selectedBill?.let { b ->
+                                    if (payerName.isBlank()) payerName = b.tenantName
+                                    if (amount.isBlank()) {
+                                        val suggested = if (b.remainingDue > 0.0) b.remainingDue else b.totalBill
+                                        if (suggested > 0.0) amount = suggested.toInt().toString()
+                                    }
+                                }
+                            },
+                            label = {
+                                Text(
+                                    if (language == AppLanguage.BN) {
+                                        "বিল অনুযায়ী (${FormatUtils.formatInt(orderedBills.size, language)})"
+                                    } else {
+                                        "By Bill (${orderedBills.size})"
+                                    }
+                                )
+                            }
+                        )
+                        FilterChip(
+                            selected = useFlatPicker,
+                            onClick = {
+                                useFlatPicker = true
+                                selectedFlat?.let { f ->
+                                    if (payerName.isBlank()) payerName = f.tenantName
+                                    if (amount.isBlank() && f.totalMonthlyBill > 0.0) {
+                                        amount = f.totalMonthlyBill.toInt().toString()
+                                    }
+                                }
+                            },
+                            label = {
+                                Text(
+                                    if (language == AppLanguage.BN) {
+                                        "ফ্ল্যাট অনুযায়ী (${FormatUtils.formatInt(selectableFlats.size, language)})"
+                                    } else {
+                                        "By Flat (${selectableFlats.size})"
+                                    }
+                                )
+                            }
+                        )
+                    }
                 }
+                if (!useFlatPicker && orderedBills.isNotEmpty()) {
+                    Text(
+                        text = if (language == AppLanguage.BN) "কোন ফ্ল্যাট / বিল:" else "Select Bill:",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    orderedBills.forEach { b ->
+                        val dueText = if (b.remainingDue > 0.0) {
+                            if (language == AppLanguage.BN) "বকেয়া ৳${FormatUtils.formatInt(b.remainingDue.toInt(), language)}" else "Due ${b.remainingDue.toInt()}"
+                        } else {
+                            if (language == AppLanguage.BN) "পরিশোধিত (আরও যোগ)" else "Paid (Add Extra)"
+                        }
+                        FilterChip(
+                            selected = selectedBill?.id == b.id,
+                            onClick = {
+                                selectedBill = b
+                                payerName = b.tenantName
+                                val suggested = if (b.remainingDue > 0.0) b.remainingDue else b.totalBill
+                                amount = if (suggested > 0.0) suggested.toInt().toString() else ""
+                            },
+                            label = { Text("${b.flatNumber} • ${b.tenantName.ifBlank { b.buildingName }} (${b.billingMonth}) - $dueText") }
+                        )
+                    }
+                } else if (selectableFlats.isNotEmpty()) {
+                    Text(
+                        text = if (language == AppLanguage.BN) "কোন ফ্ল্যাট থেকে পেলেন:" else "Select Flat:",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    selectableFlats.forEach { f ->
+                        val tenantTag = f.tenantName.ifBlank {
+                            if (language == AppLanguage.BN) "খালি ফ্ল্যাট" else "Vacant"
+                        }
+                        FilterChip(
+                            selected = selectedFlat?.id == f.id,
+                            onClick = {
+                                selectedFlat = f
+                                payerName = f.tenantName
+                                val suggested = if (f.remainingDue > 0.0) f.remainingDue else f.totalMonthlyBill
+                                amount = if (suggested > 0.0) suggested.toInt().toString() else ""
+                            },
+                            label = { Text("${f.buildingName} • ${f.flatNumber} ($tenantTag)") }
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = payerName,
+                    onValueChange = { payerName = it },
+                    label = {
+                        Text(
+                            if (language == AppLanguage.BN) {
+                                "যার হাতে / কাছ থেকে পেলেন (নাম লিখুন)"
+                            } else {
+                                "Received From (Payer Name)"
+                            }
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("direct_payment_payer_input")
+                )
                 Text(
                     text = if (language == AppLanguage.BN) "পেমেন্ট মাধ্যম:" else "Payment Method:",
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
@@ -995,7 +1134,7 @@ private fun DirectPaymentDialog(
                     onValueChange = { amount = FormatUtils.toAsciiDigits(it).filter { c -> c.isDigit() || c == '.' } },
                     label = { Text(strings.paymentAmount) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().testTag("direct_payment_amount_input")
                 )
                 OutlinedTextField(
                     value = ref,
@@ -1012,13 +1151,19 @@ private fun DirectPaymentDialog(
             }
         },
         confirmButton = {
+            val hasTarget = (!useFlatPicker && selectedBill != null) || (useFlatPicker && selectedFlat != null)
             Button(
                 onClick = {
-                    val b = selectedBill ?: return@Button
                     val amt = FormatUtils.parseLocalizedDouble(amount) ?: return@Button
-                    onSave(b, amt, method, ref, if (method == "cash") null else selectedBank, notes)
+                    val chosenBank = if (method == "cash") null else selectedBank
+                    if (!useFlatPicker && selectedBill != null) {
+                        onSave(selectedBill, null, amt, method, ref, chosenBank, notes, payerName)
+                    } else if (selectedFlat != null) {
+                        onSave(null, selectedFlat, amt, method, ref, chosenBank, notes, payerName)
+                    }
                 },
-                enabled = selectedBill != null && (FormatUtils.parseLocalizedDouble(amount) ?: 0.0) > 0.0
+                enabled = hasTarget && (FormatUtils.parseLocalizedDouble(amount) ?: 0.0) > 0.0,
+                modifier = Modifier.testTag("confirm_direct_payment_btn")
             ) { Text(strings.save) }
         },
         dismissButton = {

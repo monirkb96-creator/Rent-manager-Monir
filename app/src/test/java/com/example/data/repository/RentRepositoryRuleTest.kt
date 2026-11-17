@@ -764,6 +764,54 @@ class RentRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertEquals(66500.0, cashRestored, 0.01)
     }
 
+    @Test
+    fun recordAdminDirectPaymentForFlat_worksWithoutPreExistingBillAndSavesCustomPayerName() = runBlocking {
+        val uniqueSuffix = UUID.randomUUID().toString().take(6)
+        val ownerUid = bootstrapOwner("owner_directflat_$uniqueSuffix@test.com")
+        val repo = RentRepository(firestore, auth)
+
+        val bldgId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveBuilding(Building(name = "Direct Tower $uniqueSuffix", address = "Dhaka", floorsCount = 2, totalFlats = 2)).getOrThrow()
+        }
+        val flatId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveFlat(
+                Flat(
+                    ownerId = ownerUid,
+                    buildingId = bldgId,
+                    buildingName = "Direct Tower $uniqueSuffix",
+                    flatNumber = "4A",
+                    floorNumber = 4,
+                    monthlyRent = 15000.0
+                )
+            ).getOrThrow()
+        }
+        val savedFlat = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeFlats().first { list -> list.any { it.id == flatId } }.first { it.id == flatId }
+        }
+
+        // Record cash payment directly for flat WITHOUT generating a bill beforehand
+        val rcpId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.recordAdminDirectPaymentForFlat(
+                flat = savedFlat,
+                amount = 15000.0,
+                method = "cash",
+                referenceNumber = "",
+                targetBankAccount = null,
+                notes = "Hand cash received",
+                customPayerName = "Abdul Karim (Son)"
+            ).getOrThrow()
+        }
+        assertTrue(rcpId.isNotEmpty())
+
+        val payments = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observePayments().first { list -> list.any { it.flatId == flatId } }
+        }
+        val recorded = payments.first { it.flatId == flatId }
+        assertEquals("Abdul Karim (Son)", recorded.tenantName)
+        assertEquals("verified", recorded.verificationStatus)
+        assertEquals(15000.0, recorded.amount, 0.01)
+    }
+
     private companion object {
         const val DEFAULT_TIMEOUT_MS = 5000L
         const val FLOW_TIMEOUT_MS = 4000L
