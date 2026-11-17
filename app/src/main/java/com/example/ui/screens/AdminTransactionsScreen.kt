@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -95,6 +96,7 @@ fun AdminTransactionsScreen(
     onRecordBankTxWithFlat: (BankAccount, Double, String, String, String, String, String) -> Unit = { acc, amt, type, desc, ref, _, _ ->
         onRecordBankTx(acc, amt, type, desc, ref)
     },
+    onTransferCashToBank: (BankAccount, Double, String, String) -> Unit = { _, _, _, _ -> },
     onRecordCashTx: (Double, String, String, String) -> Unit,
     onAddExpense: (Expense, BankAccount?) -> Unit,
     onDeletePayment: (PaymentRecord) -> Unit = {},
@@ -125,6 +127,7 @@ fun AdminTransactionsScreen(
     var selectedBankDetailId by remember { mutableStateOf<String?>(null) }
     var verifyBankTargetPayment by remember { mutableStateOf<PaymentRecord?>(null) }
     var showCashTxDialog by remember { mutableStateOf(false) }
+    var showCashToBankDialog by remember { mutableStateOf(false) }
     var showExpenseDialog by remember { mutableStateOf(false) }
     var selectedReceipt by remember { mutableStateOf<Receipt?>(null) }
     var previewSlipPayment by remember { mutableStateOf<PaymentRecord?>(null) }
@@ -460,31 +463,81 @@ fun AdminTransactionsScreen(
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Column {
-                                    Text(strings.totalCashBalance, style = MaterialTheme.typography.labelLarge)
-                                    Text(
-                                        FormatUtils.formatBdt(state.totalCashBalance, language),
-                                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(strings.totalCashBalance, style = MaterialTheme.typography.labelLarge)
+                                        Text(
+                                            FormatUtils.formatBdt(state.totalCashBalance, language),
+                                            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            text = if (language == AppLanguage.BN) {
+                                                "জমা: +${FormatUtils.formatBdt(state.cashInTotal, language)}"
+                                            } else {
+                                                "In: +${FormatUtils.formatBdt(state.cashInTotal, language)}"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = StatusPaidText
+                                        )
+                                        Text(
+                                            text = if (language == AppLanguage.BN) {
+                                                "খরচ/ব্যাংক: −${FormatUtils.formatBdt(state.cashOutTotal, language)}"
+                                            } else {
+                                                "Out: −${FormatUtils.formatBdt(state.cashOutTotal, language)}"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = StatusUnpaidText
+                                        )
+                                    }
                                 }
-                                Button(onClick = { showCashTxDialog = true }) {
-                                    Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(strings.addCashEntry)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = { showCashToBankDialog = true },
+                                        enabled = state.bankAccounts.isNotEmpty(),
+                                        modifier = Modifier.weight(1f).testTag("cash_to_bank_transfer_btn")
+                                    ) {
+                                        Icon(Icons.Filled.SwapHoriz, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(
+                                            text = if (language == AppLanguage.BN) "নগদ → ব্যাংকে জমা" else "Cash to Bank",
+                                            maxLines = 1
+                                        )
+                                    }
+                                    OutlinedButton(
+                                        onClick = { showCashTxDialog = true },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(strings.addCashEntry, maxLines = 1)
+                                    }
                                 }
                             }
                         }
                     }
                     items(state.cashTransactions, key = { it.id }) { tx ->
+                        val typeLabel = if (language == AppLanguage.BN) {
+                            if (tx.transactionType == "cash_in") "নগদ জমা (+)" else "নগদ খরচ / ব্যাংকে জমা (−)"
+                        } else {
+                            if (tx.transactionType == "cash_in") "Cash In (+)" else "Cash Out (−)"
+                        }
                         LedgerRowCard(
                             title = tx.description,
-                            subtitle = "${tx.date} • ${tx.transactionType} • Ref: ${tx.referenceNumber}",
+                            subtitle = "${FormatUtils.toLocalizedDigits(tx.date, language)} • $typeLabel${if (tx.referenceNumber.isNotBlank()) " • Ref: ${tx.referenceNumber}" else ""}",
                             amount = tx.amount,
                             isPositive = tx.transactionType == "cash_in",
                             language = language,
@@ -607,10 +660,15 @@ fun AdminTransactionsScreen(
         BankTxDialog(
             account = acc,
             flats = state.flats,
+            currentCashBalance = state.totalCashBalance,
             onDismiss = { bankTxTarget = null },
             onSave = { amt, type, desc, ref, bId, fId ->
                 bankTxTarget = null
-                onRecordBankTxWithFlat(acc, amt, type, desc, ref, bId, fId)
+                if (type == "cash_to_bank") {
+                    onTransferCashToBank(acc, amt, desc, ref)
+                } else {
+                    onRecordBankTxWithFlat(acc, amt, type, desc, ref, bId, fId)
+                }
             }
         )
     }
@@ -674,6 +732,18 @@ fun AdminTransactionsScreen(
             onSave = { amt, type, desc, ref ->
                 showCashTxDialog = false
                 onRecordCashTx(amt, type, desc, ref)
+            }
+        )
+    }
+
+    if (showCashToBankDialog) {
+        CashToBankTransferDialog(
+            bankAccounts = state.bankAccounts,
+            currentCashBalance = state.totalCashBalance,
+            onDismiss = { showCashToBankDialog = false },
+            onTransfer = { acc, amt, desc, ref ->
+                showCashToBankDialog = false
+                onTransferCashToBank(acc, amt, desc, ref)
             }
         )
     }
@@ -1011,12 +1081,13 @@ private fun AddBankAccountDialog(
 private fun BankTxDialog(
     account: BankAccount,
     flats: List<Flat>,
+    currentCashBalance: Double = 0.0,
     onDismiss: () -> Unit,
     onSave: (Double, String, String, String, String, String) -> Unit
 ) {
     val strings = LocalStrings.current
     val language = LocalLanguage.current
-    var type by remember { mutableStateOf("received") }
+    var type by remember { mutableStateOf(if (currentCashBalance > 0.0) "cash_to_bank" else "received") }
     var selectedFlat by remember { mutableStateOf<Flat?>(null) }
     var amount by remember { mutableStateOf("") }
     var desc by remember { mutableStateOf("") }
@@ -1039,19 +1110,55 @@ private fun BankTxDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilterChip(
+                    selected = type == "cash_to_bank",
+                    onClick = {
+                        type = "cash_to_bank"
+                        if (desc.isBlank()) {
+                            desc = if (language == AppLanguage.BN) "নগদ ক্যাশ ব্যাংকে জমা" else "Cash deposited to bank"
+                        }
+                    },
+                    label = {
+                        Text(
+                            if (language == AppLanguage.BN) {
+                                "নগদ ক্যাশ থেকে জমা (নগদ −, ব্যাংক +)"
+                            } else {
+                                "From Cash in Hand (Cash −, Bank +)"
+                            }
+                        )
+                    }
+                )
+                FilterChip(
                     selected = type == "received",
                     onClick = { type = "received" },
                     label = {
-                        Text(if (language == AppLanguage.BN) "ব্যাংকে জমা (+ টাকা যোগ হবে)" else "Deposit (+ Added to Bank)")
+                        Text(if (language == AppLanguage.BN) "বাইরের / সরাসরি জমা (শুধু ব্যাংক +)" else "Direct Deposit (+ Bank Only)")
                     }
                 )
                 FilterChip(
                     selected = type == "transferred",
                     onClick = { type = "transferred" },
                     label = {
-                        Text(if (language == AppLanguage.BN) "ব্যাংক থেকে উত্তোলন (-)" else "Withdraw / Transfer Out (-)")
+                        Text(if (language == AppLanguage.BN) "ব্যাংক থেকে উত্তোলন (−)" else "Withdraw / Transfer Out (−)")
                     }
                 )
+                if (type == "cash_to_bank") {
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (language == AppLanguage.BN) {
+                                "বর্তমান নগদ ব্যালেন্স: ${FormatUtils.formatBdt(currentCashBalance, language)}। এখান থেকে জমা দিলে নগদ ব্যালেন্স থেকে টাকা কমে ব্যাংকে যোগ হবে।"
+                            } else {
+                                "Current Cash Balance: ${FormatUtils.formatBdt(currentCashBalance, language)}. Depositing moves money from Cash to Bank."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
                 if (flats.isNotEmpty() && type == "received") {
                     Text(
                         text = if (language == AppLanguage.BN) "কোন তলা ও ফ্ল্যাট থেকে জমা (ঐচ্ছিক):" else "Select Floor & Flat (Optional):",
@@ -1119,6 +1226,114 @@ private fun BankTxDialog(
                 },
                 enabled = (FormatUtils.parseLocalizedDouble(amount) ?: 0.0) > 0.0 && desc.isNotBlank()
             ) { Text(strings.save) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(strings.cancel) } }
+    )
+}
+
+@Composable
+private fun CashToBankTransferDialog(
+    bankAccounts: List<BankAccount>,
+    currentCashBalance: Double,
+    onDismiss: () -> Unit,
+    onTransfer: (BankAccount, Double, String, String) -> Unit
+) {
+    val strings = LocalStrings.current
+    val language = LocalLanguage.current
+    var selectedBank by remember { mutableStateOf(bankAccounts.firstOrNull()) }
+    var amount by remember {
+        mutableStateOf(if (currentCashBalance > 0.0) currentCashBalance.toInt().toString() else "")
+    }
+    var desc by remember {
+        mutableStateOf(if (language == AppLanguage.BN) "নগদ ভাড়া ব্যাংকে জমা" else "Cash rent deposited to bank")
+    }
+    var ref by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(if (language == AppLanguage.BN) "নগদ ক্যাশ → ব্যাংকে জমা দিন" else "Transfer Cash to Bank")
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = if (language == AppLanguage.BN) {
+                            "বর্তমান নগদ ব্যালেন্স: ${FormatUtils.formatBdt(currentCashBalance, language)}। এখান থেকে জমা দিলে নগদ ব্যালেন্স কমবে এবং নির্বাচিত ব্যাংক ব্যালেন্স বাড়বে।"
+                        } else {
+                            "Available Cash: ${FormatUtils.formatBdt(currentCashBalance, language)}. This deducts Cash Balance and adds to the selected Bank Account."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+                Text(
+                    text = if (language == AppLanguage.BN) "কোন ব্যাংকে জমা দেবেন:" else "Select Destination Bank:",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                )
+                bankAccounts.forEach { acc ->
+                    FilterChip(
+                        selected = selectedBank?.id == acc.id,
+                        onClick = { selectedBank = acc },
+                        label = { Text("${acc.accountName} (${acc.bankName})") }
+                    )
+                }
+                if (currentCashBalance > 0.0) {
+                    FilterChip(
+                        selected = (FormatUtils.parseLocalizedDouble(amount) ?: 0.0) == currentCashBalance,
+                        onClick = { amount = currentCashBalance.toInt().toString() },
+                        label = {
+                            Text(
+                                if (language == AppLanguage.BN) {
+                                    "সম্পূর্ণ নগদ (${FormatUtils.formatBdt(currentCashBalance, language)})"
+                                } else {
+                                    "All Cash (${FormatUtils.formatBdt(currentCashBalance, language)})"
+                                }
+                            )
+                        }
+                    )
+                }
+                OutlinedTextField(
+                    value = amount,
+                    onValueChange = { amount = FormatUtils.toAsciiDigits(it).filter { c -> c.isDigit() || c == '.' } },
+                    label = { Text(strings.paymentAmount) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth().testTag("cash_to_bank_amount_input")
+                )
+                OutlinedTextField(
+                    value = desc,
+                    onValueChange = { desc = it },
+                    label = { Text(strings.description) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = ref,
+                    onValueChange = { ref = it },
+                    label = { Text(strings.transactionRef) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val acc = selectedBank ?: return@Button
+                    val amt = FormatUtils.parseLocalizedDouble(amount) ?: return@Button
+                    onTransfer(acc, amt, desc, ref)
+                },
+                enabled = selectedBank != null && (FormatUtils.parseLocalizedDouble(amount) ?: 0.0) > 0.0 && desc.isNotBlank(),
+                modifier = Modifier.testTag("confirm_cash_to_bank_btn")
+            ) {
+                Text(if (language == AppLanguage.BN) "ব্যাংকে জমা সম্পন্ন করুন" else "Transfer")
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(strings.cancel) } }
     )

@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.TrendingDown
 import androidx.compose.material.icons.filled.TrendingUp
@@ -49,6 +50,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -451,6 +453,125 @@ fun AdminDashboardScreen(
                         accentColor = StatusUnpaidText,
                         modifier = Modifier.weight(1f)
                     )
+                }
+            }
+        }
+
+        // Cash & Bank Reconciliation Card
+        if (state.totalCollectedAmount > 0.0 || state.totalBankBalance != 0.0 || state.totalCashBalance != 0.0 || state.totalExpensesAllTime > 0.0) {
+            item {
+                val netAfterExpense = state.netCollectedAfterExpenses
+                val combinedCashAndBank = state.totalCashAndBankBalance
+                val hasCashBankDoubleCount = (combinedCashAndBank - state.totalBankOpeningBalance) > (netAfterExpense + 1.0) &&
+                    state.totalCashBalance > 0.0
+                Card(
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (language == AppLanguage.BN) "আয়, ব্যাংক ও নগদ হিসাব বিবরণ" else "Cash & Bank Reconciliation",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = FormatUtils.formatBdt(combinedCashAndBank, language),
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = if (language == AppLanguage.BN) {
+                                    "আদায় (${FormatUtils.formatBdt(state.totalCollectedAmount, language)}) − ব্যয় (${FormatUtils.formatBdt(state.totalExpensesAllTime, language)})"
+                                } else {
+                                    "Collected − Expenses"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = FormatUtils.formatBdt(netAfterExpense, language),
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = if (language == AppLanguage.BN) {
+                                    "নগদ জমা (+${FormatUtils.formatBdt(state.cashInTotal, language)}) − খরচ/ব্যাংকে জমা (−${FormatUtils.formatBdt(state.cashOutTotal, language)})"
+                                } else {
+                                    "Cash In (+${FormatUtils.formatBdt(state.cashInTotal, language)}) − Cash Out (−${FormatUtils.formatBdt(state.cashOutTotal, language)})"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = FormatUtils.formatBdt(state.totalCashBalance, language),
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                        if (state.totalBankOpeningBalance > 0.0) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = if (language == AppLanguage.BN) "ব্যাংক শুরুর ব্যালেন্স (Opening)" else "Bank Opening Balance",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = FormatUtils.formatBdt(state.totalBankOpeningBalance, language),
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+                                )
+                            }
+                        }
+                        if (hasCashBankDoubleCount) {
+                            HorizontalDivider()
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = if (language == AppLanguage.BN) {
+                                        "নোট: হাতে নগদ টাকা সরাসরি ব্যাংকে যোগ করলে নগদ ক্যাশ থেকে কমে না। নগদ টাকা ব্যাংকে জমা দিয়ে থাকলে নিচের বাটনে চাপ দিয়ে 'নগদ → ব্যাংকে জমা' সমন্বয় করুন।"
+                                    } else {
+                                        "Note: Adding a direct bank deposit does not deduct Cash in Hand. Use Cash → Bank Transfer to move cash into your bank cleanly."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+                        if (state.totalCashBalance > 0.0 && state.bankAccounts.isNotEmpty()) {
+                            OutlinedButton(
+                                onClick = onNavigateToTransactions,
+                                modifier = Modifier.fillMaxWidth().testTag("dashboard_cash_to_bank_btn")
+                            ) {
+                                Icon(Icons.Filled.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (language == AppLanguage.BN) "নগদ থেকে ব্যাংকে জমা দিন / লেনদেন দেখুন" else "Transfer Cash to Bank / View Ledger")
+                            }
+                        }
+                    }
                 }
             }
         }

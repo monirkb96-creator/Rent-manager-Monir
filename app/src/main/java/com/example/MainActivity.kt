@@ -319,6 +319,7 @@ private fun AdminShell(
                     onAddBankAccount = viewModel::addBankAccount,
                     onRecordBankTx = viewModel::recordBankTx,
                     onRecordBankTxWithFlat = viewModel::recordBankTxWithFlat,
+                    onTransferCashToBank = viewModel::transferCashToBank,
                     onRecordCashTx = viewModel::recordCashTx,
                     onAddExpense = viewModel::addExpense,
                     onDeletePayment = viewModel::deletePayment,

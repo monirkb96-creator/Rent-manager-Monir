@@ -63,11 +63,13 @@ data class AdminDataSnapshot(
     val totalCollectedAmount: Double get() = payments.filter { it.verificationStatus == "verified" }.sumOf { it.amount }
     val totalOutstandingDues: Double get() = bills.sumOf { it.remainingDue }
     val totalBankBalance: Double get() = bankAccounts.sumOf { it.currentBalance }
-    val totalCashBalance: Double get() {
-        val cashIn = cashTransactions.filter { it.transactionType == "cash_in" }.sumOf { it.amount }
-        val cashOut = cashTransactions.filter { it.transactionType == "cash_out" }.sumOf { it.amount }
-        return cashIn - cashOut
-    }
+    val totalBankOpeningBalance: Double get() = bankAccounts.sumOf { it.openingBalance }
+    val cashInTotal: Double get() = cashTransactions.filter { it.transactionType == "cash_in" }.sumOf { it.amount }
+    val cashOutTotal: Double get() = cashTransactions.filter { it.transactionType == "cash_out" }.sumOf { it.amount }
+    val totalCashBalance: Double get() = cashInTotal - cashOutTotal
+    val totalCashAndBankBalance: Double get() = totalBankBalance + totalCashBalance
+    val totalExpensesAllTime: Double get() = expenses.sumOf { it.amount }
+    val netCollectedAfterExpenses: Double get() = totalCollectedAmount - totalExpensesAllTime
     val currentMonthKey: String get() = FormatUtils.currentMonthKey()
     val currentBillingMonth: String get() = FormatUtils.currentBillingMonth()
     val monthlyIncome: Double
@@ -324,6 +326,15 @@ class AdminViewModel(
         flatId: String
     ) = runAction("Bank transaction recorded") {
         repository.recordBankTransaction(account, amount, type, desc, ref, buildingId, flatId)
+    }
+
+    fun transferCashToBank(
+        account: BankAccount,
+        amount: Double,
+        desc: String,
+        ref: String
+    ) = runAction("নগদ থেকে ব্যাংকে ৳${amount.toInt()} জমা সম্পন্ন হয়েছে (নগদ কমেছে)") {
+        repository.transferCashToBank(account, amount, desc, ref)
     }
 
     fun recordCashTx(amount: Double, type: String, desc: String, ref: String) =

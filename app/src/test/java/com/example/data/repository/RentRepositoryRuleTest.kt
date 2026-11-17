@@ -706,6 +706,64 @@ class RentRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertTrue(withTimeout(FLOW_TIMEOUT_MS) { repo.observeCashTransactions().first() }.isEmpty())
     }
 
+    @Test
+    fun transferCashToBank_deductsCashAndCreditsBankWithoutDoubleCounting() = runBlocking {
+        val uniqueSuffix = UUID.randomUUID().toString().take(6)
+        val ownerEmail = "owner_c2b_$uniqueSuffix@test.com"
+        val ownerUid = bootstrapOwner(ownerEmail)
+        val repo = RentRepository(firestore, auth)
+
+        val bankId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.addBankAccount(
+                BankAccount(
+                    ownerId = ownerUid,
+                    accountName = "Main Bank",
+                    bankName = "BRAC",
+                    accountNumber = "55443322",
+                    openingBalance = 0.0
+                )
+            ).getOrThrow()
+        }
+        val initialBank = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeBankAccounts().first { list -> list.any { it.id == bankId } }.first { it.id == bankId }
+        }
+
+        // Cash in 104,000 then Cash out 37,500 => 66,500 cash remaining
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.recordCashTransaction(104000.0, "cash_in", "Cash Rent", "C_IN_$uniqueSuffix").getOrThrow()
+            repo.recordCashTransaction(37500.0, "cash_out", "Maintenance Expense", "C_OUT_$uniqueSuffix").getOrThrow()
+        }
+
+        val bankTxId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.transferCashToBank(initialBank, 66500.0, "Cash rent deposit", "C2B_$uniqueSuffix").getOrThrow()
+        }
+
+        val cashTxs = withTimeout(FLOW_TIMEOUT_MS) { repo.observeCashTransactions().first { it.size >= 3 } }
+        val cashIn = cashTxs.filter { it.transactionType == "cash_in" }.sumOf { it.amount }
+        val cashOut = cashTxs.filter { it.transactionType == "cash_out" }.sumOf { it.amount }
+        val bankAfter = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeBankAccounts().first { list -> list.any { it.id == bankId && it.currentBalance >= 66500.0 } }.first { it.id == bankId }
+        }
+
+        assertEquals(0.0, cashIn - cashOut, 0.01)
+        assertEquals(66500.0, bankAfter.currentBalance, 0.01)
+
+        // Deleting that bank deposit must also remove the paired cash_out and roll back bank balance
+        val bankTx = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeBankTransactions().first { list -> list.any { it.id == bankTxId } }.first { it.id == bankTxId }
+        }
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.deleteBankTransaction(bankTx, bankAfter).getOrThrow()
+        }
+
+        val cashAfterDelete = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeCashTransactions().first { list -> list.size == 2 }
+        }
+        val cashRestored = cashAfterDelete.filter { it.transactionType == "cash_in" }.sumOf { it.amount } -
+            cashAfterDelete.filter { it.transactionType == "cash_out" }.sumOf { it.amount }
+        assertEquals(66500.0, cashRestored, 0.01)
+    }
+
     private companion object {
         const val DEFAULT_TIMEOUT_MS = 5000L
         const val FLOW_TIMEOUT_MS = 4000L

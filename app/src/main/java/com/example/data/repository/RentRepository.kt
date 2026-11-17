@@ -1762,6 +1762,81 @@ class RentRepository(
         handleFirestoreError(it, OperationType.WRITE, "bank_transactions")
     }
 
+    suspend fun transferCashToBank(
+        account: BankAccount,
+        amount: Double,
+        description: String,
+        referenceNumber: String
+    ): Result<String> = runCatching {
+        val uid = requireUserId()
+        require(amount > 0.0)
+        val today = FormatUtils.todayDdMmYyyy()
+        val resolvedRef = referenceNumber.trim().ifBlank {
+            "C2B_${System.currentTimeMillis() % 1000000}"
+        }
+        val cleanDesc = description.trim().ifBlank { "নগদ ক্যাশ থেকে ব্যাংকে জমা" }
+        val cashTxRef = db.collection("cash_transactions").document()
+        val bankTxRef = db.collection("bank_transactions").document()
+
+        val batch = db.batch()
+        batch.set(
+            cashTxRef,
+            mapOf(
+                "ownerId" to uid,
+                "date" to today,
+                "amount" to amount,
+                "transactionType" to "cash_out",
+                "description" to "ব্যাংকে জমা (${account.accountName}): $cleanDesc",
+                "paymentMethod" to "cash",
+                "referenceNumber" to resolvedRef,
+                "buildingId" to "",
+                "flatId" to "",
+                "createdBy" to uid,
+                "verificationStatus" to "verified",
+                "createdAt" to FieldValue.serverTimestamp()
+            )
+        )
+        batch.set(
+            bankTxRef,
+            mapOf(
+                "ownerId" to uid,
+                "bankAccountId" to account.id,
+                "bankAccountName" to account.accountName,
+                "date" to today,
+                "amount" to amount,
+                "transactionType" to "received",
+                "description" to "নগদ ক্যাশ থেকে জমা: $cleanDesc",
+                "paymentMethod" to "cash",
+                "referenceNumber" to resolvedRef,
+                "buildingId" to "",
+                "flatId" to "",
+                "createdBy" to uid,
+                "verificationStatus" to "verified",
+                "createdAt" to FieldValue.serverTimestamp()
+            )
+        )
+        batch.update(
+            db.collection("bank_accounts").document(account.id),
+            mapOf(
+                "moneyReceived" to account.moneyReceived + amount,
+                "currentBalance" to account.currentBalance + amount,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+        )
+        batch.commit().await()
+        writeAuditLog(
+            uid,
+            "admin",
+            "TRANSFER_CASH_TO_BANK",
+            "bank_transaction",
+            bankTxRef.id,
+            "Transferred BDT $amount from cash to ${account.accountName} ($resolvedRef)"
+        )
+        bankTxRef.id
+    }.onFailure {
+        handleFirestoreError(it, OperationType.WRITE, "bank_transactions")
+    }
+
     suspend fun recordCashTransaction(
         amount: Double,
         type: String, // "cash_in" | "cash_out"
@@ -1921,6 +1996,23 @@ class RentRepository(
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             )
+        }
+        if (tx.transactionType == "received" && tx.paymentMethod == "cash" && tx.referenceNumber.isNotBlank()) {
+            val pairedCashOuts = try {
+                db.collection("cash_transactions")
+                    .whereEqualTo("ownerId", uid)
+                    .get()
+                    .await()
+                    .documents
+                    .filter {
+                        it.getString("transactionType") == "cash_out" &&
+                            it.getString("referenceNumber") == tx.referenceNumber &&
+                            (it.getDouble("amount") ?: 0.0) == tx.amount
+                    }
+            } catch (_: Exception) {
+                emptyList()
+            }
+            pairedCashOuts.forEach { doc -> batch.delete(doc.reference) }
         }
         batch.commit().await()
         writeAuditLog(uid, "admin", "DELETE_BANK_TX", "bank_transaction", tx.id, "Deleted bank transaction ${tx.description}")
